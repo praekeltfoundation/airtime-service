@@ -82,8 +82,37 @@ class TestVoucherPool(TestCase):
             'operator': operator,
             'denomination': denomination,
         }, **audit_params)
-        print params
         return self.post('testpool/issue', params, expected_code)
+
+    @inlineCallbacks
+    def test_request_missing_params(self):
+        params = self._add_audit_params({}, request_id='req-0')
+        rsp = yield self.post('testpool/issue', params, expected_code=400)
+        assert rsp == {
+            'request_id': 'req-0',
+            'error': "Missing request parameters: 'denomination', 'operator'",
+        }
+
+    @inlineCallbacks
+    def test_request_missing_audit_params(self):
+        params = {'operator': 'Tank', 'denomination': 'red'}
+        rsp = yield self.post('testpool/issue', params, expected_code=400)
+        assert rsp == {
+            'request_id': None,
+            'error': (
+                "Missing request parameters:"
+                " 'request_id', 'transaction_id', 'user_id'"),
+        }
+
+    @inlineCallbacks
+    def test_request_extra_params(self):
+        params = {'operator': 'Tank', 'denomination': 'red', 'foo': 'bar'}
+        params = self._add_audit_params(params, request_id='req-0')
+        rsp = yield self.post('testpool/issue', params, expected_code=400)
+        assert rsp == {
+            'request_id': 'req-0',
+            'error': "Unexpected request parameters: 'foo'",
+        }
 
     @inlineCallbacks
     def test_issue_missing_pool(self):

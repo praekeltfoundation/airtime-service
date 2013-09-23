@@ -109,9 +109,6 @@ class VoucherPool(object):
         request_id = audit_params['request_id']
         transaction_id = audit_params['transaction_id']
         user_id = audit_params['user_id']
-        print audit_params
-        print "  req:", req_data
-        print "  rsp:", resp_data
         return self._execute(
             self.audit.insert().values(**{
                 'request_id': request_id,
