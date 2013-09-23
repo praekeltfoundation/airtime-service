@@ -226,3 +226,28 @@ class VoucherPool(object):
         )
         counts = yield result.fetchall()
         returnValue(counts)
+
+    @inlineCallbacks
+    def _query_audit(self, where_clause):
+        result = yield self._execute(
+            self.audit.select().where(where_clause).order_by(
+                self.audit.c.created_at))
+        rows = yield result.fetchall()
+        returnValue([{
+            'request_id': row['request_id'],
+            'transaction_id': row['transaction_id'],
+            'user_id': row['user_id'],
+            'request_data': json.loads(row['request_data']),
+            'response_data': json.loads(row['response_data']),
+            'error': row['error'],
+            'created_at': row['created_at'],
+        } for row in rows])
+
+    def query_by_request_id(self, request_id):
+        return self._query_audit(self.audit.c.request_id == request_id)
+
+    def query_by_transaction_id(self, transaction_id):
+        return self._query_audit(self.audit.c.transaction_id == transaction_id)
+
+    def query_by_user_id(self, user_id):
+        return self._query_audit(self.audit.c.user_id == user_id)

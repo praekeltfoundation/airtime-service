@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from twisted.trial.unittest import TestCase
 
 from airtime_service.models import (
@@ -145,3 +147,125 @@ class TestVoucherPool(TestCase):
             pool.issue_voucher('Tank', 'red', audit_params),
             NoVoucherAvailable)
         self.assert_voucher_counts(pool, [('Tank', 'red', False, 1)])
+
+    def test_query_by_request_id(self):
+        pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
+
+        audit_params = self._audit_params()
+        audit_params_exclude = self._audit_params()
+        rows = self.successResultOf(
+            pool.query_by_request_id(audit_params['request_id']))
+        assert rows == []
+
+        before = datetime.utcnow()
+        self.successResultOf(
+            pool._audit_request(audit_params, 'req_data', 'resp_data'))
+        self.successResultOf(
+            pool._audit_request(audit_params_exclude, 'excl', 'excl'))
+        after = datetime.utcnow()
+        rows = self.successResultOf(
+            pool.query_by_request_id(audit_params['request_id']))
+
+        created_at = rows[0]['created_at']
+        assert before <= created_at <= after
+        assert rows == [{
+            'request_id': audit_params['request_id'],
+            'transaction_id': audit_params['transaction_id'],
+            'user_id': audit_params['user_id'],
+            'request_data': u'req_data',
+            'response_data': u'resp_data',
+            'error': False,
+            'created_at': created_at,
+        }]
+
+    def test_query_by_transaction_id(self):
+        pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
+
+        audit_params_0 = self._audit_params()
+        transaction_id = audit_params_0['transaction_id']
+        audit_params_1 = self._audit_params(
+            transaction_id=transaction_id, user_id=audit_params_0['user_id'])
+        audit_params_exclude = self._audit_params()
+
+        rows = self.successResultOf(
+            pool.query_by_transaction_id(transaction_id))
+        assert rows == []
+
+        before = datetime.utcnow()
+        self.successResultOf(
+            pool._audit_request(audit_params_0, 'req_data_0', 'resp_data_0'))
+        self.successResultOf(
+            pool._audit_request(audit_params_1, 'req_data_1', 'resp_data_1'))
+        self.successResultOf(
+            pool._audit_request(audit_params_exclude, 'excl', 'excl'))
+        after = datetime.utcnow()
+        rows = self.successResultOf(
+            pool.query_by_transaction_id(transaction_id))
+
+        created_at_0 = rows[0]['created_at']
+        created_at_1 = rows[1]['created_at']
+        assert before <= created_at_0 <= created_at_1 <= after
+
+        assert rows == [{
+            'request_id': audit_params_0['request_id'],
+            'transaction_id': transaction_id,
+            'user_id': audit_params_0['user_id'],
+            'request_data': u'req_data_0',
+            'response_data': u'resp_data_0',
+            'error': False,
+            'created_at': created_at_0,
+        }, {
+            'request_id': audit_params_1['request_id'],
+            'transaction_id': transaction_id,
+            'user_id': audit_params_1['user_id'],
+            'request_data': u'req_data_1',
+            'response_data': u'resp_data_1',
+            'error': False,
+            'created_at': created_at_1,
+        }]
+
+    def test_query_by_user_id(self):
+        pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
+
+        audit_params_0 = self._audit_params()
+        user_id = audit_params_0['user_id']
+        audit_params_1 = self._audit_params(user_id=user_id)
+        audit_params_exclude = self._audit_params()
+
+        rows = self.successResultOf(pool.query_by_user_id(user_id))
+        assert rows == []
+
+        before = datetime.utcnow()
+        self.successResultOf(
+            pool._audit_request(audit_params_0, 'req_data_0', 'resp_data_0'))
+        self.successResultOf(
+            pool._audit_request(audit_params_1, 'req_data_1', 'resp_data_1'))
+        self.successResultOf(
+            pool._audit_request(audit_params_exclude, 'excl', 'excl'))
+        after = datetime.utcnow()
+        rows = self.successResultOf(pool.query_by_user_id(user_id))
+
+        created_at_0 = rows[0]['created_at']
+        created_at_1 = rows[1]['created_at']
+        assert before <= created_at_0 <= created_at_1 <= after
+
+        assert rows == [{
+            'request_id': audit_params_0['request_id'],
+            'transaction_id': audit_params_0['transaction_id'],
+            'user_id': user_id,
+            'request_data': u'req_data_0',
+            'response_data': u'resp_data_0',
+            'error': False,
+            'created_at': created_at_0,
+        }, {
+            'request_id': audit_params_1['request_id'],
+            'transaction_id': audit_params_1['transaction_id'],
+            'user_id': user_id,
+            'request_data': u'req_data_1',
+            'response_data': u'resp_data_1',
+            'error': False,
+            'created_at': created_at_1,
+        }]
