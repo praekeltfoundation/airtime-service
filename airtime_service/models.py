@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 
 from alchimia import TWISTED_STRATEGY
 
@@ -14,6 +15,10 @@ from twisted.internet.defer import inlineCallbacks, returnValue
 
 
 class VoucherError(Exception):
+    pass
+
+
+class AuditMismatch(VoucherError):
     pass
 
 
@@ -36,6 +41,8 @@ class VoucherPool(object):
         self.metadata = MetaData()
         self.vouchers = Table(
             self._table_name('vouchers'), self.metadata, *self.voucher_columns)
+        self.audit = Table(
+            self._table_name('audit'), self.metadata, *self.audit_columns)
 
     @property
     def voucher_columns(self):
@@ -48,6 +55,20 @@ class VoucherPool(object):
             Column("created_at", DateTime(timezone=True)),
             Column("modified_at", DateTime(timezone=True)),
             Column("reason", String(), default=None),
+        )
+
+    @property
+    def audit_columns(self):
+        return (
+            Column("id", Integer(), primary_key=True),
+            Column("request_id", String(), nullable=False, index=True,
+                   unique=True),
+            Column("transaction_id", String(), nullable=False, index=True),
+            Column("user_id", String(), nullable=False, index=True),
+            Column("request_data", String(), nullable=False),
+            Column("response_data", String(), nullable=False),
+            Column("error", Boolean(), nullable=False),
+            Column("created_at", DateTime(timezone=True)),
         )
 
     def _table_name(self, basename):
@@ -79,7 +100,54 @@ class VoucherPool(object):
 
     @inlineCallbacks
     def create_tables(self):
+        trx = yield self._conn.begin()
         yield self._create_table(self.vouchers)
+        yield self._create_table(self.audit)
+        yield trx.commit()
+
+    def _audit_request(self, audit_params, req_data, resp_data, error=False):
+        request_id = audit_params['request_id']
+        transaction_id = audit_params['transaction_id']
+        user_id = audit_params['user_id']
+        print audit_params
+        print "  req:", req_data
+        print "  rsp:", resp_data
+        return self._execute(
+            self.audit.insert().values(**{
+                'request_id': request_id,
+                'transaction_id': transaction_id,
+                'user_id': user_id,
+                'request_data': json.dumps(req_data),
+                'response_data': json.dumps(resp_data),
+                'error': error,
+                'created_at': datetime.utcnow(),
+            }))
+
+    @inlineCallbacks
+    def _get_previous_request(self, audit_params, req_data):
+        result = yield self._execute(
+            self.audit.select().where(
+                self.audit.c.request_id == audit_params['request_id']))
+        rows = yield result.fetchall()
+        if not rows:
+            returnValue(None)
+        [row] = rows
+        old_audit_params = {
+            'request_id': row['request_id'],
+            'transaction_id': row['transaction_id'],
+            'user_id': row['user_id'],
+        }
+        old_req_data = json.loads(row['request_data'])
+        old_resp_data = json.loads(row['response_data'])
+        if audit_params != old_audit_params or req_data != old_req_data:
+            raise AuditMismatch()
+
+        if row['error']:
+            exc_class = {
+                'no_voucher': NoVoucherAvailable,
+            }[old_resp_data]
+            raise exc_class()
+        returnValue(json.loads(row['response_data']))
 
     @inlineCallbacks
     def import_vouchers(self, voucher_dicts):
@@ -96,8 +164,7 @@ class VoucherPool(object):
             'created_at': now,
             'modified_at': now,
         } for voucher_dict in voucher_dicts]
-        result = yield self._execute(
-            self.vouchers.insert(), voucher_rows)
+        result = yield self._execute(self.vouchers.insert(), voucher_rows)
         returnValue(result)
 
     @inlineCallbacks
@@ -109,6 +176,9 @@ class VoucherPool(object):
                 not_(self.vouchers.c.used),
             )).limit(1))
         voucher = yield result.fetchone()
+        if voucher is not None:
+            voucher = dict((k, v) for k, v in voucher.items()
+                           if k not in ('created_at', 'modified_at'))
         returnValue(voucher)
 
     def _update_voucher(self, voucher_id, **values):
@@ -118,13 +188,29 @@ class VoucherPool(object):
                 self.vouchers.c.id == voucher_id).values(**values))
 
     @inlineCallbacks
-    def issue_voucher(self, operator, denomination):
+    def issue_voucher(self, operator, denomination, audit_params):
+        audit_req_data = {'operator': operator, 'denomination': denomination}
+
+        # If we have already seen this request, return the same response as
+        # before. Appropriate exceptions will be raised here.
+        previous_data = yield self._get_previous_request(
+            audit_params, audit_req_data)
+        if previous_data is not None:
+            returnValue(previous_data)
+
+        # This is a new request, so handle it accordingly.
         trx = yield self._conn.begin()
-        voucher = yield self._get_voucher(operator, denomination)
-        if voucher is None:
-            raise NoVoucherAvailable()
-        yield self._update_voucher(voucher['id'], used=True, reason='issued')
-        yield trx.commit()
+        try:
+            voucher = yield self._get_voucher(operator, denomination)
+            if voucher is None:
+                yield self._audit_request(
+                    audit_params, audit_req_data, 'no_voucher', error=True)
+                raise NoVoucherAvailable()
+            yield self._update_voucher(
+                voucher['id'], used=True, reason='issued')
+            yield self._audit_request(audit_params, audit_req_data, voucher)
+        finally:
+            yield trx.commit()
         returnValue(voucher)
 
     @inlineCallbacks

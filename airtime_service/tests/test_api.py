@@ -24,9 +24,26 @@ class TestVoucherPool(TestCase):
         self.listener_port = self.listener.getHost().port
         # Keep a connection around so the in-memory db doesn't go away.
         self.conn = yield self.asapp.engine.connect()
+        self._request_count = 0
 
     def tearDown(self):
         return self.listener.loseConnection()
+
+    def _add_audit_params(self, params, request_id=None, transaction_id=None,
+                          user_id=None):
+        if request_id is None:
+            request_id = 'req-%s' % (self._request_count,)
+            self._request_count += 1
+        if transaction_id is None:
+            transaction_id = 'tx-%s' % (request_id,)
+        if user_id is None:
+            user_id = 'user-%s' % (request_id,)
+        params.update({
+            'request_id': request_id,
+            'transaction_id': transaction_id,
+            'user_id': user_id,
+        })
+        return params
 
     def populate_pool(self, pool_name, operators, denominations, suffixes):
         pool = VoucherPool(pool_name, self.conn)
@@ -59,42 +76,48 @@ class TestVoucherPool(TestCase):
         assert response.code == expected_code
         return readBody(response).addCallback(json.loads)
 
-    def post_issue(self, operator, denomination, request_id,
-                   expected_code=200):
-        params = {
+    def post_issue(self, operator, denomination, expected_code=200,
+                   **audit_params):
+        params = self._add_audit_params({
             'operator': operator,
             'denomination': denomination,
-            'request_id': request_id,
-        }
+        }, **audit_params)
+        print params
         return self.post('testpool/issue', params, expected_code)
 
     @inlineCallbacks
     def test_issue_missing_pool(self):
-        rsp = yield self.post_issue('Tank', 'red', 'req-0', expected_code=404)
+        rsp = yield self.post_issue(
+            'Tank', 'red', request_id='req-0', expected_code=404)
         assert rsp == {
             'request_id': 'req-0',
             'error': 'Voucher pool does not exist.',
         }
 
     @inlineCallbacks
+    def test_issue_response_contains_request_id(self):
+        yield self.populate_pool('testpool', ['Tank'], ['red'], [0, 1])
+        rsp0 = yield self.post_issue('Tank', 'red', request_id='req-0')
+        assert rsp0['request_id'] == 'req-0'
+
+    @inlineCallbacks
     def test_issue(self):
         yield self.populate_pool('testpool', ['Tank'], ['red'], [0, 1])
-        rsp0 = yield self.post_issue('Tank', 'red', 'req-0')
+        rsp0 = yield self.post_issue('Tank', 'red')
         assert set(rsp0.keys()) == set(['request_id', 'voucher'])
-        assert rsp0['request_id'] == 'req-0'
         assert rsp0['voucher'] in ['Tank-red-0', 'Tank-red-1']
 
-        rsp1 = yield self.post_issue('Tank', 'red', 'req-1')
+        rsp1 = yield self.post_issue('Tank', 'red')
         assert set(rsp1.keys()) == set(['request_id', 'voucher'])
-        assert rsp1['request_id'] == 'req-1'
         assert rsp1['voucher'] in ['Tank-red-0', 'Tank-red-1']
 
+        assert rsp0['request_id'] != rsp1['request_id']
         assert rsp0['voucher'] != rsp1['voucher']
 
     @inlineCallbacks
     def test_issue_no_voucher(self):
         yield self.populate_pool('testpool', ['Tank'], ['red'], [0])
-        rsp = yield self.post_issue('Tank', 'blue', 'req-0')
+        rsp = yield self.post_issue('Tank', 'blue', request_id='req-0')
         assert rsp == {
             'request_id': 'req-0',
             'error': 'No voucher available.',
