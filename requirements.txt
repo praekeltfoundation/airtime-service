@@ -1,0 +1,4 @@
+Twisted
+klein
+sqlalchemy
+alchimia==0.3-dev
