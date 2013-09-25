@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 from urllib import urlencode
 from StringIO import StringIO
@@ -34,19 +35,26 @@ class TestVoucherPool(TestCase):
         return 'http://localhost:%s/%s' % (
             self.listener_port, url_path.lstrip('/'))
 
-    def post(self, url_path, params, expected_code=200):
+    def _make_call(self, method, url_path, body, expected_code):
         agent = Agent(reactor)
         url = self.make_url(url_path)
         headers = Headers({
             'Content-Type': ['application/x-www-form-urlencoded'],
         })
-        body = FileBodyProducer(StringIO(urlencode(params)))
-        d = agent.request('POST', url, headers, body)
+        d = agent.request(method, url, headers, body)
         return d.addCallback(self._get_response_body, expected_code)
 
     def _get_response_body(self, response, expected_code):
         assert response.code == expected_code
         return readBody(response).addCallback(json.loads)
+
+    def get(self, url_path, params, expected_code=200):
+        url_path = '?'.join([url_path, urlencode(params)])
+        return self._make_call('GET', url_path, None, expected_code)
+
+    def post(self, url_path, params, expected_code=200):
+        body = FileBodyProducer(StringIO(urlencode(params)))
+        return self._make_call('POST', url_path, body, expected_code)
 
     def post_issue(self, request_id, operator, denomination,
                    expected_code=200):
@@ -56,6 +64,10 @@ class TestVoucherPool(TestCase):
             'denomination': denomination,
         })
         return self.post('testpool/issue', params, expected_code)
+
+    def get_audit_query(self, request_id, field, value, expected_code=200):
+        params = {'request_id': request_id, 'field': field, 'value': value}
+        return self.get('testpool/audit_query', params, expected_code)
 
     @inlineCallbacks
     def test_request_missing_params(self):
@@ -128,3 +140,112 @@ class TestVoucherPool(TestCase):
             'request_id': 'req-0',
             'error': 'No voucher available.',
         }
+
+    def _assert_audit_entries(self, request_id, response, expected_entries):
+        def created_ats():
+            for result in response['results']:
+                yield datetime.strptime(
+                    result['created_at'], '%Y-%m-%dT%H:%M:%S.%f').isoformat()
+            while True:
+                yield None
+
+        expected_results = [{
+            'request_id': entry['audit_params']['request_id'],
+            'transaction_id': entry['audit_params']['transaction_id'],
+            'user_id': entry['audit_params']['user_id'],
+            'request_data': entry['request_data'],
+            'response_data': entry['response_data'],
+            'error': entry['error'],
+            'created_at': created_at,
+        } for entry, created_at in zip(expected_entries, created_ats())]
+
+        assert response == {
+            'request_id': request_id,
+            'results': expected_results,
+        }
+
+    @inlineCallbacks
+    def test_query_by_request_id(self):
+        yield self.pool.create_tables()
+
+        audit_params = mk_audit_params('req-0')
+        rsp = yield self.get_audit_query('audit-0', 'request_id', 'req-0')
+        assert rsp == {
+            'request_id': 'audit-0',
+            'results': [],
+        }
+
+        yield self.pool._audit_request(audit_params, 'req_data', 'resp_data')
+
+        rsp = yield self.get_audit_query('audit-1', 'request_id', 'req-0')
+
+        self._assert_audit_entries('audit-1', rsp, [{
+            'audit_params': audit_params,
+            'request_data': u'req_data',
+            'response_data': u'resp_data',
+            'error': False,
+        }])
+
+    @inlineCallbacks
+    def test_query_by_transaction_id(self):
+        yield self.pool.create_tables()
+
+        audit_params_0 = mk_audit_params('req-0', 'transaction-0')
+        audit_params_1 = mk_audit_params('req-1', 'transaction-0')
+        rsp = yield self.get_audit_query(
+            'audit-0', 'transaction_id', 'transaction-0')
+        assert rsp == {
+            'request_id': 'audit-0',
+            'results': [],
+        }
+
+        yield self.pool._audit_request(
+            audit_params_0, 'req_data_0', 'resp_data_0')
+        yield self.pool._audit_request(
+            audit_params_1, 'req_data_1', 'resp_data_1')
+
+        rsp = yield self.get_audit_query(
+            'audit-1', 'transaction_id', 'transaction-0')
+
+        self._assert_audit_entries('audit-1', rsp, [{
+            'audit_params': audit_params_0,
+            'request_data': u'req_data_0',
+            'response_data': u'resp_data_0',
+            'error': False,
+        }, {
+            'audit_params': audit_params_1,
+            'request_data': u'req_data_1',
+            'response_data': u'resp_data_1',
+            'error': False,
+        }])
+
+    @inlineCallbacks
+    def test_query_by_user_id(self):
+        yield self.pool.create_tables()
+
+        audit_params_0 = mk_audit_params('req-0', 'transaction-0', 'user-0')
+        audit_params_1 = mk_audit_params('req-1', 'transaction-1', 'user-0')
+        rsp = yield self.get_audit_query('audit-0', 'user_id', 'user-0')
+        assert rsp == {
+            'request_id': 'audit-0',
+            'results': [],
+        }
+
+        yield self.pool._audit_request(
+            audit_params_0, 'req_data_0', 'resp_data_0')
+        yield self.pool._audit_request(
+            audit_params_1, 'req_data_1', 'resp_data_1')
+
+        rsp = yield self.get_audit_query('audit-1', 'user_id', 'user-0')
+
+        self._assert_audit_entries('audit-1', rsp, [{
+            'audit_params': audit_params_0,
+            'request_data': u'req_data_0',
+            'response_data': u'resp_data_0',
+            'error': False,
+        }, {
+            'audit_params': audit_params_1,
+            'request_data': u'req_data_1',
+            'response_data': u'resp_data_1',
+            'error': False,
+        }])

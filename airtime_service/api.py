@@ -55,6 +55,7 @@ class AirtimeServiceApp(object):
     def parse_request_params(self, request, fields, with_audit_params=True):
         req_fields = set(request.args.keys())
         expected_fields = set(fields)
+        expected_fields.add('request_id')
         if with_audit_params:
             expected_fields.update(self.AUDIT_PARAM_FIELDS)
 
@@ -74,10 +75,12 @@ class AirtimeServiceApp(object):
         return params
 
     def format_response(self, request, **params):
+        request.setHeader('Content-Type', 'application/json')
         params['request_id'] = request.args['request_id'][0]
         return json.dumps(params)
 
     def format_error(self, request, error):
+        request.setHeader('Content-Type', 'application/json')
         request.setResponseCode(error.code)
         return json.dumps({
             'request_id': request.args.get('request_id', [None])[0],
@@ -109,5 +112,35 @@ class AirtimeServiceApp(object):
         finally:
             yield conn.close()
 
-        request.setHeader('Content-Type', 'application/json')
         returnValue(self.format_response(request, voucher=voucher['voucher']))
+
+    @app.route('/<string:voucher_pool>/audit_query', methods=['GET'])
+    @error_handling_request
+    def audit_query(self, request, voucher_pool):
+        params = self.parse_request_params(
+            request, ['field', 'value'], with_audit_params=False)
+        if params['field'] not in self.AUDIT_PARAM_FIELDS:
+            raise BadRequestParams('Invalid audit field.')
+
+        conn = yield self.engine.connect()
+        pool = VoucherPool(voucher_pool, conn)
+        try:
+            query = {
+                'request_id': pool.query_by_request_id,
+                'transaction_id': pool.query_by_transaction_id,
+                'user_id': pool.query_by_user_id,
+            }[params['field']]
+            rows = yield query(params['value'])
+        finally:
+            yield conn.close()
+
+        results = [{
+            'request_id': row['request_id'],
+            'transaction_id': row['transaction_id'],
+            'user_id': row['user_id'],
+            'request_data': row['request_data'],
+            'response_data': row['response_data'],
+            'error': row['error'],
+            'created_at': row['created_at'].isoformat(),
+        } for row in rows]
+        returnValue(self.format_response(request, results=results))
