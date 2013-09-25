@@ -6,6 +6,7 @@ from airtime_service.models import (
     get_engine, VoucherPool, NoVoucherAvailable, NoVoucherPool)
 
 from .doubles import FakeReactorThreads
+from .helpers import populate_pool, mk_audit_params
 
 
 class TestVoucherPool(TestCase):
@@ -19,42 +20,15 @@ class TestVoucherPool(TestCase):
     def tearDown(self):
         self.successResultOf(self.conn.close())
 
-    def populate_pool(self, pool, operators, denominations, suffixes):
-        return self.successResultOf(pool.import_vouchers([
-            {
-                'operator': operator,
-                'denomination': denomination,
-                'voucher': '%s-%s-%s' % (operator, denomination, suffix),
-            }
-            for operator in operators
-            for denomination in denominations
-            for suffix in suffixes
-        ]))
-
     def assert_voucher_counts(self, pool, expected_rows):
         rows = self.successResultOf(pool.count_vouchers())
         assert sorted(tuple(r) for r in rows) == sorted(expected_rows)
-
-    def _audit_params(self, request_id=None, transaction_id=None,
-                      user_id=None):
-        if request_id is None:
-            request_id = 'req-%s' % (self._request_count,)
-            self._request_count += 1
-        if transaction_id is None:
-            transaction_id = 'tx-%s' % (request_id,)
-        if user_id is None:
-            user_id = 'user-%s' % (request_id,)
-        return {
-            'request_id': request_id,
-            'transaction_id': transaction_id,
-            'user_id': user_id,
-        }
 
     def test_import_creates_table(self):
         pool = VoucherPool('testpool', self.conn)
         f = self.failureResultOf(pool.count_vouchers(), NoVoucherPool)
         assert f.value.args == ('testpool',)
-        self.populate_pool(pool, ['Tank'], ['red'], [0])
+        populate_pool(pool, ['Tank'], ['red'], [0])
         self.assert_voucher_counts(pool, [('Tank', 'red', False, 1)])
 
     def test_exists(self):
@@ -86,11 +60,11 @@ class TestVoucherPool(TestCase):
 
     def test_issue_voucher(self):
         pool = VoucherPool('testpool', self.conn)
-        self.populate_pool(pool, ['Tank'], ['red'], [0])
+        populate_pool(pool, ['Tank'], ['red'], [0])
         self.assert_voucher_counts(pool, [('Tank', 'red', False, 1)])
 
         voucher = self.successResultOf(
-            pool.issue_voucher('Tank', 'red', self._audit_params()))
+            pool.issue_voucher('Tank', 'red', mk_audit_params('req-0')))
         assert voucher['operator'] == 'Tank'
         assert voucher['denomination'] == 'red'
         assert voucher['voucher'] == 'Tank-red-0'
@@ -101,15 +75,15 @@ class TestVoucherPool(TestCase):
         self.successResultOf(pool.create_tables())
         self.assert_voucher_counts(pool, [])
         self.failureResultOf(
-            pool.issue_voucher('Tank', 'red', self._audit_params()),
+            pool.issue_voucher('Tank', 'red', mk_audit_params('req-0')),
             NoVoucherAvailable)
 
     def test_issue_voucher_idempotent(self):
         pool = VoucherPool('testpool', self.conn)
-        self.populate_pool(pool, ['Tank'], ['red'], [0])
+        populate_pool(pool, ['Tank'], ['red'], [0])
         self.assert_voucher_counts(pool, [('Tank', 'red', False, 1)])
 
-        audit_params = self._audit_params()
+        audit_params = mk_audit_params('req-0')
 
         # Issue a successful request.
         voucher = self.successResultOf(
@@ -132,14 +106,14 @@ class TestVoucherPool(TestCase):
         self.successResultOf(pool.create_tables())
         self.assert_voucher_counts(pool, [])
 
-        audit_params = self._audit_params()
+        audit_params = mk_audit_params('req-0')
 
         # Issue an unsuccessful request.
         self.failureResultOf(
             pool.issue_voucher('Tank', 'red', audit_params),
             NoVoucherAvailable)
 
-        self.populate_pool(pool, ['Tank'], ['red'], [0])
+        populate_pool(pool, ['Tank'], ['red'], [0])
         self.assert_voucher_counts(pool, [('Tank', 'red', False, 1)])
 
         # Reissue the same request with available vouchers.
@@ -152,20 +126,18 @@ class TestVoucherPool(TestCase):
         pool = VoucherPool('testpool', self.conn)
         self.successResultOf(pool.create_tables())
 
-        audit_params = self._audit_params()
-        audit_params_exclude = self._audit_params()
-        rows = self.successResultOf(
-            pool.query_by_request_id(audit_params['request_id']))
+        audit_params = mk_audit_params('req-0')
+        rows = self.successResultOf(pool.query_by_request_id('req-0'))
         assert rows == []
 
         before = datetime.utcnow()
         self.successResultOf(
             pool._audit_request(audit_params, 'req_data', 'resp_data'))
         self.successResultOf(
-            pool._audit_request(audit_params_exclude, 'excl', 'excl'))
+            pool._audit_request(mk_audit_params('req-excl'), 'excl', 'excl'))
         after = datetime.utcnow()
-        rows = self.successResultOf(
-            pool.query_by_request_id(audit_params['request_id']))
+
+        rows = self.successResultOf(pool.query_by_request_id('req-0'))
 
         created_at = rows[0]['created_at']
         assert before <= created_at <= after
@@ -183,14 +155,10 @@ class TestVoucherPool(TestCase):
         pool = VoucherPool('testpool', self.conn)
         self.successResultOf(pool.create_tables())
 
-        audit_params_0 = self._audit_params()
-        transaction_id = audit_params_0['transaction_id']
-        audit_params_1 = self._audit_params(
-            transaction_id=transaction_id, user_id=audit_params_0['user_id'])
-        audit_params_exclude = self._audit_params()
-
+        audit_params_0 = mk_audit_params('req-0', 'transaction-0')
+        audit_params_1 = mk_audit_params('req-1', 'transaction-0')
         rows = self.successResultOf(
-            pool.query_by_transaction_id(transaction_id))
+            pool.query_by_transaction_id('transaction-0'))
         assert rows == []
 
         before = datetime.utcnow()
@@ -199,18 +167,18 @@ class TestVoucherPool(TestCase):
         self.successResultOf(
             pool._audit_request(audit_params_1, 'req_data_1', 'resp_data_1'))
         self.successResultOf(
-            pool._audit_request(audit_params_exclude, 'excl', 'excl'))
+            pool._audit_request(mk_audit_params('req-excl'), 'excl', 'excl'))
         after = datetime.utcnow()
-        rows = self.successResultOf(
-            pool.query_by_transaction_id(transaction_id))
 
+        rows = self.successResultOf(
+            pool.query_by_transaction_id('transaction-0'))
         created_at_0 = rows[0]['created_at']
         created_at_1 = rows[1]['created_at']
         assert before <= created_at_0 <= created_at_1 <= after
 
         assert rows == [{
             'request_id': audit_params_0['request_id'],
-            'transaction_id': transaction_id,
+            'transaction_id': audit_params_0['transaction_id'],
             'user_id': audit_params_0['user_id'],
             'request_data': u'req_data_0',
             'response_data': u'resp_data_0',
@@ -218,7 +186,7 @@ class TestVoucherPool(TestCase):
             'created_at': created_at_0,
         }, {
             'request_id': audit_params_1['request_id'],
-            'transaction_id': transaction_id,
+            'transaction_id': audit_params_1['transaction_id'],
             'user_id': audit_params_1['user_id'],
             'request_data': u'req_data_1',
             'response_data': u'resp_data_1',
@@ -230,12 +198,9 @@ class TestVoucherPool(TestCase):
         pool = VoucherPool('testpool', self.conn)
         self.successResultOf(pool.create_tables())
 
-        audit_params_0 = self._audit_params()
-        user_id = audit_params_0['user_id']
-        audit_params_1 = self._audit_params(user_id=user_id)
-        audit_params_exclude = self._audit_params()
-
-        rows = self.successResultOf(pool.query_by_user_id(user_id))
+        audit_params_0 = mk_audit_params('req-0', 'transaction-0', 'user-0')
+        audit_params_1 = mk_audit_params('req-1', 'transaction-1', 'user-0')
+        rows = self.successResultOf(pool.query_by_user_id('user-0'))
         assert rows == []
 
         before = datetime.utcnow()
@@ -244,10 +209,10 @@ class TestVoucherPool(TestCase):
         self.successResultOf(
             pool._audit_request(audit_params_1, 'req_data_1', 'resp_data_1'))
         self.successResultOf(
-            pool._audit_request(audit_params_exclude, 'excl', 'excl'))
+            pool._audit_request(mk_audit_params('req-excl'), 'excl', 'excl'))
         after = datetime.utcnow()
-        rows = self.successResultOf(pool.query_by_user_id(user_id))
 
+        rows = self.successResultOf(pool.query_by_user_id('user-0'))
         created_at_0 = rows[0]['created_at']
         created_at_1 = rows[1]['created_at']
         assert before <= created_at_0 <= created_at_1 <= after
@@ -255,7 +220,7 @@ class TestVoucherPool(TestCase):
         assert rows == [{
             'request_id': audit_params_0['request_id'],
             'transaction_id': audit_params_0['transaction_id'],
-            'user_id': user_id,
+            'user_id': audit_params_0['user_id'],
             'request_data': u'req_data_0',
             'response_data': u'resp_data_0',
             'error': False,
@@ -263,7 +228,7 @@ class TestVoucherPool(TestCase):
         }, {
             'request_id': audit_params_1['request_id'],
             'transaction_id': audit_params_1['transaction_id'],
-            'user_id': user_id,
+            'user_id': audit_params_1['user_id'],
             'request_data': u'req_data_1',
             'response_data': u'resp_data_1',
             'error': False,

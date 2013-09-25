@@ -12,6 +12,8 @@ from twisted.web.server import Site
 from airtime_service.api import AirtimeServiceApp
 from airtime_service.models import VoucherPool
 
+from .helpers import populate_pool, mk_audit_params
+
 
 class TestVoucherPool(TestCase):
     timeout = 5
@@ -19,44 +21,14 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def setUp(self):
         self.asapp = AirtimeServiceApp("sqlite://", reactor=reactor)
-        site = Site(self.asapp.app.resource(), 'localhost')
-        self.listener = reactor.listenTCP(0, site)
+        site = Site(self.asapp.app.resource())
+        self.listener = reactor.listenTCP(0, site, interface='localhost')
         self.listener_port = self.listener.getHost().port
-        # Keep a connection around so the in-memory db doesn't go away.
         self.conn = yield self.asapp.engine.connect()
-        self._request_count = 0
+        self.pool = VoucherPool('testpool', self.conn)
 
     def tearDown(self):
         return self.listener.loseConnection()
-
-    def _add_audit_params(self, params, request_id=None, transaction_id=None,
-                          user_id=None):
-        if request_id is None:
-            request_id = 'req-%s' % (self._request_count,)
-            self._request_count += 1
-        if transaction_id is None:
-            transaction_id = 'tx-%s' % (request_id,)
-        if user_id is None:
-            user_id = 'user-%s' % (request_id,)
-        params.update({
-            'request_id': request_id,
-            'transaction_id': transaction_id,
-            'user_id': user_id,
-        })
-        return params
-
-    def populate_pool(self, pool_name, operators, denominations, suffixes):
-        pool = VoucherPool(pool_name, self.conn)
-        return pool.import_vouchers([
-            {
-                'operator': operator,
-                'denomination': denomination,
-                'voucher': '%s-%s-%s' % (operator, denomination, suffix),
-            }
-            for operator in operators
-            for denomination in denominations
-            for suffix in suffixes
-        ])
 
     def make_url(self, url_path):
         return 'http://localhost:%s/%s' % (
@@ -76,17 +48,18 @@ class TestVoucherPool(TestCase):
         assert response.code == expected_code
         return readBody(response).addCallback(json.loads)
 
-    def post_issue(self, operator, denomination, expected_code=200,
-                   **audit_params):
-        params = self._add_audit_params({
+    def post_issue(self, request_id, operator, denomination,
+                   expected_code=200):
+        params = mk_audit_params(request_id)
+        params.update({
             'operator': operator,
             'denomination': denomination,
-        }, **audit_params)
+        })
         return self.post('testpool/issue', params, expected_code)
 
     @inlineCallbacks
     def test_request_missing_params(self):
-        params = self._add_audit_params({}, request_id='req-0')
+        params = mk_audit_params('req-0')
         rsp = yield self.post('testpool/issue', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
@@ -106,8 +79,12 @@ class TestVoucherPool(TestCase):
 
     @inlineCallbacks
     def test_request_extra_params(self):
-        params = {'operator': 'Tank', 'denomination': 'red', 'foo': 'bar'}
-        params = self._add_audit_params(params, request_id='req-0')
+        params = mk_audit_params('req-0')
+        params.update({
+            'operator': 'Tank',
+            'denomination': 'red',
+            'foo': 'bar',
+        })
         rsp = yield self.post('testpool/issue', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
@@ -116,8 +93,7 @@ class TestVoucherPool(TestCase):
 
     @inlineCallbacks
     def test_issue_missing_pool(self):
-        rsp = yield self.post_issue(
-            'Tank', 'red', request_id='req-0', expected_code=404)
+        rsp = yield self.post_issue('req-0', 'Tank', 'red', expected_code=404)
         assert rsp == {
             'request_id': 'req-0',
             'error': 'Voucher pool does not exist.',
@@ -125,28 +101,29 @@ class TestVoucherPool(TestCase):
 
     @inlineCallbacks
     def test_issue_response_contains_request_id(self):
-        yield self.populate_pool('testpool', ['Tank'], ['red'], [0, 1])
-        rsp0 = yield self.post_issue('Tank', 'red', request_id='req-0')
+        yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
+        rsp0 = yield self.post_issue('req-0', 'Tank', 'red')
         assert rsp0['request_id'] == 'req-0'
 
     @inlineCallbacks
     def test_issue(self):
-        yield self.populate_pool('testpool', ['Tank'], ['red'], [0, 1])
-        rsp0 = yield self.post_issue('Tank', 'red')
+        yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
+        rsp0 = yield self.post_issue('req-0', 'Tank', 'red')
         assert set(rsp0.keys()) == set(['request_id', 'voucher'])
+        assert rsp0['request_id'] == 'req-0'
         assert rsp0['voucher'] in ['Tank-red-0', 'Tank-red-1']
 
-        rsp1 = yield self.post_issue('Tank', 'red')
+        rsp1 = yield self.post_issue('req-1', 'Tank', 'red')
         assert set(rsp1.keys()) == set(['request_id', 'voucher'])
+        assert rsp1['request_id'] == 'req-1'
         assert rsp1['voucher'] in ['Tank-red-0', 'Tank-red-1']
 
-        assert rsp0['request_id'] != rsp1['request_id']
         assert rsp0['voucher'] != rsp1['voucher']
 
     @inlineCallbacks
     def test_issue_no_voucher(self):
-        yield self.populate_pool('testpool', ['Tank'], ['red'], [0])
-        rsp = yield self.post_issue('Tank', 'blue', request_id='req-0')
+        yield populate_pool(self.pool, ['Tank'], ['red'], [0])
+        rsp = yield self.post_issue('req-0', 'Tank', 'blue')
         assert rsp == {
             'request_id': 'req-0',
             'error': 'No voucher available.',
