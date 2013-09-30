@@ -23,69 +23,28 @@ class BadRequestParams(APIError):
     code = 400
 
 
-def error_handling_request(func):
-    func = inlineCallbacks(func)
-
-    @wraps(func)
-    def wrapper(self, request, *args, **kw):
-        d = func(self, request, *args, **kw)
-        d.addErrback(self.handle_api_error, request)
-        return d
-    return wrapper
+_airtime_service_app = Klein()
 
 
 class AirtimeServiceApp(object):
-    AUDIT_PARAM_FIELDS = ('request_id', 'transaction_id', 'user_id')
-
-    app = Klein()
+    app = _airtime_service_app
 
     def __init__(self, conn_str, reactor):
         self.engine = get_engine(conn_str, reactor)
 
-    def _parse_params(self, request, fields):
-        params = {}
-        for field in fields:
-            [value] = request.args[field]
-            params[field] = value
-        return params
+    def handler(*args, **kw):
 
-    def parse_audit_params(self, request):
-        return self._parse_params(request, self.AUDIT_PARAM_FIELDS)
+        def decorator(func):
+            func = inlineCallbacks(func)
+            route = _airtime_service_app.route(*args, **kw)
 
-    def parse_request_params(self, request, fields, with_audit_params=True):
-        req_fields = set(request.args.keys())
-        expected_fields = set(fields)
-        expected_fields.add('request_id')
-        if with_audit_params:
-            expected_fields.update(self.AUDIT_PARAM_FIELDS)
-
-        missing_fields = expected_fields - req_fields
-        if missing_fields:
-            raise BadRequestParams("Missing request parameters: '%s'" % (
-                "', '".join(sorted(missing_fields)),))
-
-        extra_fields = req_fields - expected_fields
-        if extra_fields:
-            raise BadRequestParams("Unexpected request parameters: '%s'" % (
-                "', '".join(sorted(extra_fields)),))
-
-        params = self._parse_params(request, fields)
-        if with_audit_params:
-            return (self.parse_audit_params(request), params)
-        return params
-
-    def format_response(self, request, **params):
-        request.setHeader('Content-Type', 'application/json')
-        params['request_id'] = request.args['request_id'][0]
-        return json.dumps(params)
-
-    def format_error(self, request, error):
-        request.setHeader('Content-Type', 'application/json')
-        request.setResponseCode(error.code)
-        return json.dumps({
-            'request_id': request.args.get('request_id', [None])[0],
-            'error': error.message,
-        })
+            @wraps(func)
+            def wrapper(self, request, *args, **kw):
+                d = func(self, request, *args, **kw)
+                d.addErrback(self.handle_api_error, request)
+                return d
+            return route(wrapper)
+        return decorator
 
     def handle_api_error(self, failure, request):
         error = failure.value
@@ -94,16 +53,63 @@ class AirtimeServiceApp(object):
             error = APIError('Internal server error.')
         return self.format_error(request, error)
 
-    @app.route('/<string:voucher_pool>/issue', methods=['POST'])
-    @error_handling_request
-    def issue_voucher(self, request, voucher_pool):
-        audit_params, params = self.parse_request_params(
-            request, ['operator', 'denomination'])
+    def _get_request_id(self, request):
+        try:
+            return request.__request_id
+        except AttributeError:
+            return None
+
+    def format_response(self, request, **params):
+        request.setHeader('Content-Type', 'application/json')
+        params['request_id'] = self._get_request_id(request)
+        return json.dumps(params)
+
+    def format_error(self, request, error):
+        request.setHeader('Content-Type', 'application/json')
+        request.setResponseCode(error.code)
+        return json.dumps({
+            'request_id': self._get_request_id(request),
+            'error': error.message,
+        })
+
+    def _get_params(self, params, mandatory, optional):
+        missing = set(mandatory) - set(params.keys())
+        extra = set(params.keys()) - (set(mandatory) | set(optional))
+        if missing:
+            raise BadRequestParams("Missing request parameters: '%s'" % (
+                "', '".join(sorted(missing))))
+        if extra:
+            raise BadRequestParams("Unexpected request parameters: '%s'" % (
+                "', '".join(sorted(extra))))
+        return params
+
+    def get_json_params(self, request, mandatory, optional=()):
+        return self._get_params(
+            json.loads(request.content.read()), mandatory, optional)
+
+    def get_url_params(self, request, mandatory, optional=()):
+        if 'request_id' in request.args:
+            request.__request_id = request.args['request_id'][0]
+        params = self._get_params(request.args, mandatory, optional)
+        return dict((k, v[0]) for k, v in params.iteritems())
+
+    @handler(
+        '/<string:voucher_pool>/issue/<string:operator>/<string:request_id>',
+        methods=['PUT'])
+    def issue_voucher(self, request, voucher_pool, operator, request_id):
+        request.__request_id = request_id  # Name-mangled because it's not ours
+        params = self.get_json_params(
+            request, ['transaction_id', 'user_id', 'denomination'])
+        audit_params = {
+            'request_id': request_id,
+            'transaction_id': params.pop('transaction_id'),
+            'user_id': params.pop('user_id'),
+        }
         conn = yield self.engine.connect()
         pool = VoucherPool(voucher_pool, conn)
         try:
             voucher = yield pool.issue_voucher(
-                params['operator'], params['denomination'], audit_params)
+                operator, params['denomination'], audit_params)
         except NoVoucherPool:
             raise APIError('Voucher pool does not exist.', 404)
         except NoVoucherAvailable:
@@ -114,12 +120,11 @@ class AirtimeServiceApp(object):
 
         returnValue(self.format_response(request, voucher=voucher['voucher']))
 
-    @app.route('/<string:voucher_pool>/audit_query', methods=['GET'])
-    @error_handling_request
+    @handler('/<string:voucher_pool>/audit_query', methods=['GET'])
     def audit_query(self, request, voucher_pool):
-        params = self.parse_request_params(
-            request, ['field', 'value'], with_audit_params=False)
-        if params['field'] not in self.AUDIT_PARAM_FIELDS:
+        params = self.get_url_params(
+            request, ['field', 'value'], ['request_id'])
+        if params['field'] not in ['request_id', 'transaction_id', 'user_id']:
             raise BadRequestParams('Invalid audit field.')
 
         conn = yield self.engine.connect()

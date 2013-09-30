@@ -35,12 +35,9 @@ class TestVoucherPool(TestCase):
         return 'http://localhost:%s/%s' % (
             self.listener_port, url_path.lstrip('/'))
 
-    def _make_call(self, method, url_path, body, expected_code):
+    def _make_call(self, method, url_path, headers, body, expected_code):
         agent = Agent(reactor)
         url = self.make_url(url_path)
-        headers = Headers({
-            'Content-Type': ['application/x-www-form-urlencoded'],
-        })
         d = agent.request(method, url, headers, body)
         return d.addCallback(self._get_response_body, expected_code)
 
@@ -50,20 +47,23 @@ class TestVoucherPool(TestCase):
 
     def get(self, url_path, params, expected_code=200):
         url_path = '?'.join([url_path, urlencode(params)])
-        return self._make_call('GET', url_path, None, expected_code)
+        return self._make_call('GET', url_path, None, None, expected_code)
 
-    def post(self, url_path, params, expected_code=200):
-        body = FileBodyProducer(StringIO(urlencode(params)))
-        return self._make_call('POST', url_path, body, expected_code)
+    def put(self, url_path, params, expected_code=200):
+        body = FileBodyProducer(StringIO(json.dumps(params)))
+        headers = Headers({
+            'Content-Type': ['application/json'],
+        })
+        return self._make_call('PUT', url_path, headers, body, expected_code)
 
-    def post_issue(self, request_id, operator, denomination,
-                   expected_code=200):
+    def put_issue(self, request_id, operator, denomination, expected_code=200):
         params = mk_audit_params(request_id)
         params.update({
-            'operator': operator,
             'denomination': denomination,
         })
-        return self.post('testpool/issue', params, expected_code)
+        params.pop('request_id')
+        url_path = 'testpool/issue/%s/%s' % (operator, request_id)
+        return self.put(url_path, params, expected_code)
 
     def get_audit_query(self, request_id, field, value, expected_code=200):
         params = {'request_id': request_id, 'field': field, 'value': value}
@@ -72,32 +72,35 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_request_missing_params(self):
         params = mk_audit_params('req-0')
-        rsp = yield self.post('testpool/issue', params, expected_code=400)
+        params.pop('request_id')
+        rsp = yield self.put(
+            'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
-            'error': "Missing request parameters: 'denomination', 'operator'",
+            'error': "Missing request parameters: 'denomination'",
         }
 
     @inlineCallbacks
     def test_request_missing_audit_params(self):
-        params = {'operator': 'Tank', 'denomination': 'red'}
-        rsp = yield self.post('testpool/issue', params, expected_code=400)
+        params = {'denomination': 'red'}
+        rsp = yield self.put(
+            'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
-            'request_id': None,
+            'request_id': 'req-0',
             'error': (
-                "Missing request parameters:"
-                " 'request_id', 'transaction_id', 'user_id'"),
+                "Missing request parameters: 'transaction_id', 'user_id'"),
         }
 
     @inlineCallbacks
     def test_request_extra_params(self):
         params = mk_audit_params('req-0')
+        params.pop('request_id')
         params.update({
-            'operator': 'Tank',
             'denomination': 'red',
             'foo': 'bar',
         })
-        rsp = yield self.post('testpool/issue', params, expected_code=400)
+        rsp = yield self.put(
+            'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
             'error': "Unexpected request parameters: 'foo'",
@@ -105,7 +108,7 @@ class TestVoucherPool(TestCase):
 
     @inlineCallbacks
     def test_issue_missing_pool(self):
-        rsp = yield self.post_issue('req-0', 'Tank', 'red', expected_code=404)
+        rsp = yield self.put_issue('req-0', 'Tank', 'red', expected_code=404)
         assert rsp == {
             'request_id': 'req-0',
             'error': 'Voucher pool does not exist.',
@@ -114,18 +117,18 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_issue_response_contains_request_id(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
-        rsp0 = yield self.post_issue('req-0', 'Tank', 'red')
+        rsp0 = yield self.put_issue('req-0', 'Tank', 'red')
         assert rsp0['request_id'] == 'req-0'
 
     @inlineCallbacks
     def test_issue(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
-        rsp0 = yield self.post_issue('req-0', 'Tank', 'red')
+        rsp0 = yield self.put_issue('req-0', 'Tank', 'red')
         assert set(rsp0.keys()) == set(['request_id', 'voucher'])
         assert rsp0['request_id'] == 'req-0'
         assert rsp0['voucher'] in ['Tank-red-0', 'Tank-red-1']
 
-        rsp1 = yield self.post_issue('req-1', 'Tank', 'red')
+        rsp1 = yield self.put_issue('req-1', 'Tank', 'red')
         assert set(rsp1.keys()) == set(['request_id', 'voucher'])
         assert rsp1['request_id'] == 'req-1'
         assert rsp1['voucher'] in ['Tank-red-0', 'Tank-red-1']
@@ -135,7 +138,7 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_issue_no_voucher(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0])
-        rsp = yield self.post_issue('req-0', 'Tank', 'blue')
+        rsp = yield self.put_issue('req-0', 'Tank', 'blue')
         assert rsp == {
             'request_id': 'req-0',
             'error': 'No voucher available.',
