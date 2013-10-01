@@ -187,6 +187,27 @@ class AirtimeServiceApp(object):
         request.setResponseCode(201)
         returnValue(self.format_response(request, imported=True))
 
+    @handler('/<string:voucher_pool>/voucher_counts', methods=['GET'])
+    def voucher_counts(self, request, voucher_pool):
+        params = self.get_url_params(request, [], ['request_id'])
+
+        conn = yield self.engine.connect()
+        pool = VoucherPool(voucher_pool, conn)
+        try:
+            rows = yield pool.count_vouchers()
+        finally:
+            yield conn.close()
+
+        if rows:
+            print rows[0].keys()
+        results = [{
+            'operator': row['operator'],
+            'denomination': row['denomination'],
+            'used': row['used'],
+            'count': row['count'],
+        } for row in rows]
+        returnValue(self.format_response(request, voucher_counts=results))
+
 
 def lowercase_row_keys(rows):
     for row in rows:

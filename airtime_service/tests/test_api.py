@@ -84,6 +84,10 @@ class TestVoucherPool(TestCase):
         params = {'request_id': request_id, 'field': field, 'value': value}
         return self.get('testpool/audit_query', params, expected_code)
 
+    def get_voucher_counts(self, request_id, expected_code=200):
+        params = {'request_id': request_id}
+        return self.get('testpool/voucher_counts', params, expected_code)
+
     @inlineCallbacks
     def assert_voucher_counts(self, expected_rows):
         rows = yield self.pool.count_vouchers()
@@ -405,3 +409,54 @@ class TestVoucherPool(TestCase):
                 ' content.'),
         }
         yield self.assert_voucher_counts(expected_counts)
+
+    def _sorted_voucher_counts(self, voucher_counts):
+        return sorted(voucher_counts, key=lambda vc: (
+            vc['operator'], vc['denomination'], vc['used']))
+
+    @inlineCallbacks
+    def test_voucher_counts(self):
+        yield self.pool.create_tables()
+        rsp0 = yield self.get_voucher_counts('req-0')
+        assert rsp0 == {
+            'request_id': 'req-0',
+            'voucher_counts': [],
+        }
+
+        yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
+        rsp1 = yield self.get_voucher_counts('req-1')
+        assert rsp1 == {
+            'request_id': 'req-1',
+            'voucher_counts': [
+                {
+                    'operator': 'Tank',
+                    'denomination': 'red',
+                    'used': False,
+                    'count': 2,
+                },
+            ],
+        }
+
+        yield populate_pool(self.pool, ['Link'], ['blue'], [0, 1])
+        yield self.pool.issue_voucher('Link', 'blue', mk_audit_params('req-0'))
+        rsp2 = yield self.get_voucher_counts('req-2')
+        assert self._sorted_voucher_counts(rsp2['voucher_counts']) == [
+            {
+                'operator': 'Link',
+                'denomination': 'blue',
+                'used': False,
+                'count': 1,
+            },
+            {
+                'operator': 'Link',
+                'denomination': 'blue',
+                'used': True,
+                'count': 1,
+            },
+            {
+                'operator': 'Tank',
+                'denomination': 'red',
+                'used': False,
+                'count': 2,
+            },
+        ]

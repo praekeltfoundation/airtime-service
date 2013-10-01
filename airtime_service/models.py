@@ -254,7 +254,7 @@ class VoucherPool(object):
                 self.vouchers.c.operator,
                 self.vouchers.c.denomination,
                 self.vouchers.c.used,
-                func.count(self.vouchers.c.voucher),
+                func.count(self.vouchers.c.voucher).label('count'),
             ]).group_by(
                 self.vouchers.c.operator,
                 self.vouchers.c.denomination,
