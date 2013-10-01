@@ -1,6 +1,8 @@
+from uuid import uuid4
+
 
 def populate_pool(pool, operators, denominations, suffixes):
-    return pool.import_vouchers([
+    return pool.import_vouchers(str(uuid4()), 'md5', [
         {
             'operator': operator,
             'denomination': denomination,

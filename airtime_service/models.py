@@ -43,6 +43,9 @@ class VoucherPool(object):
             self._table_name('vouchers'), self.metadata, *self.voucher_columns)
         self.audit = Table(
             self._table_name('audit'), self.metadata, *self.audit_columns)
+        self.import_audit = Table(
+            self._table_name('import_audit'), self.metadata,
+            *self.import_audit_columns)
 
     @property
     def voucher_columns(self):
@@ -68,6 +71,16 @@ class VoucherPool(object):
             Column("request_data", String(), nullable=False),
             Column("response_data", String(), nullable=False),
             Column("error", Boolean(), nullable=False),
+            Column("created_at", DateTime(timezone=True)),
+        )
+
+    @property
+    def import_audit_columns(self):
+        return (
+            Column("id", Integer(), primary_key=True),
+            Column("request_id", String(), nullable=False, index=True,
+                   unique=True),
+            Column("content_md5", String(), nullable=False),
             Column("created_at", DateTime(timezone=True)),
         )
 
@@ -103,6 +116,7 @@ class VoucherPool(object):
         trx = yield self._conn.begin()
         yield self._create_table(self.vouchers)
         yield self._create_table(self.audit)
+        yield self._create_table(self.import_audit)
         yield trx.commit()
 
     def _audit_request(self, audit_params, req_data, resp_data, error=False):
@@ -147,9 +161,31 @@ class VoucherPool(object):
         returnValue(json.loads(row['response_data']))
 
     @inlineCallbacks
-    def import_vouchers(self, voucher_dicts):
+    def import_vouchers(self, request_id, content_md5, voucher_dicts):
         # We may not have a table if this is the first import.
         yield self.create_tables()
+
+        trx = yield self._conn.begin()
+
+        # Check if we've already done this one.
+        result = yield self._execute(
+            self.import_audit.select().where(
+                self.import_audit.c.request_id == request_id))
+        rows = yield result.fetchall()
+        if rows:
+            yield trx.rollback()
+            [row] = rows
+            if row['content_md5'] == content_md5:
+                returnValue(None)
+            else:
+                raise AuditMismatch(row['content_md5'])
+
+        yield self._execute(
+            self.import_audit.insert().values(**{
+                'request_id': request_id,
+                'content_md5': content_md5,
+                'created_at': datetime.utcnow(),
+            }))
 
         # NOTE: We're assuming that this will be fast enough. If it isn't,
         # we'll need to make a database-specific plan of some kind.
@@ -162,6 +198,7 @@ class VoucherPool(object):
             'modified_at': now,
         } for voucher_dict in voucher_dicts]
         result = yield self._execute(self.vouchers.insert(), voucher_rows)
+        yield trx.commit()
         returnValue(result)
 
     @inlineCallbacks

@@ -1,4 +1,5 @@
 from datetime import datetime
+from hashlib import md5
 import json
 from urllib import urlencode
 from StringIO import StringIO
@@ -45,16 +46,18 @@ class TestVoucherPool(TestCase):
         assert response.code == expected_code
         return readBody(response).addCallback(json.loads)
 
-    def get(self, url_path, params, expected_code=200):
+    def get(self, url_path, params, expected_code):
         url_path = '?'.join([url_path, urlencode(params)])
         return self._make_call('GET', url_path, None, None, expected_code)
 
-    def put(self, url_path, params, expected_code=200):
-        body = FileBodyProducer(StringIO(json.dumps(params)))
-        headers = Headers({
-            'Content-Type': ['application/json'],
-        })
+    def put(self, url_path, headers, content, expected_code=200):
+        body = FileBodyProducer(StringIO(content))
         return self._make_call('PUT', url_path, headers, body, expected_code)
+
+    def put_json(self, url_path, params, expected_code=200):
+        headers = Headers({'Content-Type': ['application/json']})
+        return self.put(
+            url_path, headers, json.dumps(params), expected_code)
 
     def put_issue(self, request_id, operator, denomination, expected_code=200):
         params = mk_audit_params(request_id)
@@ -63,17 +66,34 @@ class TestVoucherPool(TestCase):
         })
         params.pop('request_id')
         url_path = 'testpool/issue/%s/%s' % (operator, request_id)
-        return self.put(url_path, params, expected_code)
+        return self.put_json(url_path, params, expected_code)
+
+    def put_import(self, request_id, content, content_md5=None,
+                   expected_code=201):
+        url_path = 'testpool/import/%s' % (request_id,)
+        hdict = {
+            'Content-Type': ['text/csv'],
+        }
+        if content_md5 is None:
+            content_md5 = md5(content).hexdigest()
+        if content_md5:
+            hdict['Content-MD5'] = [content_md5]
+        return self.put(url_path, Headers(hdict), content, expected_code)
 
     def get_audit_query(self, request_id, field, value, expected_code=200):
         params = {'request_id': request_id, 'field': field, 'value': value}
         return self.get('testpool/audit_query', params, expected_code)
 
     @inlineCallbacks
+    def assert_voucher_counts(self, expected_rows):
+        rows = yield self.pool.count_vouchers()
+        assert sorted(tuple(r) for r in rows) == sorted(expected_rows)
+
+    @inlineCallbacks
     def test_request_missing_params(self):
         params = mk_audit_params('req-0')
         params.pop('request_id')
-        rsp = yield self.put(
+        rsp = yield self.put_json(
             'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
@@ -83,7 +103,7 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_request_missing_audit_params(self):
         params = {'denomination': 'red'}
-        rsp = yield self.put(
+        rsp = yield self.put_json(
             'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
@@ -99,7 +119,7 @@ class TestVoucherPool(TestCase):
             'denomination': 'red',
             'foo': 'bar',
         })
-        rsp = yield self.put(
+        rsp = yield self.put_json(
             'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
@@ -252,3 +272,144 @@ class TestVoucherPool(TestCase):
             'response_data': u'resp_data_1',
             'error': False,
         }])
+
+    @inlineCallbacks
+    def test_import(self):
+        yield self.pool.create_tables()
+        yield self.assert_voucher_counts([])
+
+        content = '\n'.join([
+            'operator,denomination,voucher',
+            'Tank,red,Tr0',
+            'Tank,red,Tr1',
+            'Tank,blue,Tb0',
+            'Tank,blue,Tb1',
+            'Link,red,Lr0',
+            'Link,red,Lr1',
+            'Link,blue,Lb0',
+            'Link,blue,Lb1',
+        ])
+
+        resp = yield self.put_import('req-0', content)
+        assert resp == {
+            'request_id': 'req-0',
+            'imported': True,
+        }
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ])
+
+    @inlineCallbacks
+    def test_import_heading_case_mismatch(self):
+        yield self.pool.create_tables()
+        yield self.assert_voucher_counts([])
+
+        content = '\n'.join([
+            'OperAtor,denomInation,voucheR',
+            'Tank,red,Tr0',
+            'Tank,red,Tr1',
+            'Tank,blue,Tb0',
+            'Tank,blue,Tb1',
+            'Link,red,Lr0',
+            'Link,red,Lr1',
+            'Link,blue,Lb0',
+            'Link,blue,Lb1',
+        ])
+
+        resp = yield self.put_import('req-0', content)
+        assert resp == {
+            'request_id': 'req-0',
+            'imported': True,
+        }
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ])
+
+    @inlineCallbacks
+    def test_import_no_content_md5(self):
+        yield self.pool.create_tables()
+
+        resp = yield self.put_import('req-0', 'content', '', 400)
+        assert resp == {
+            'request_id': 'req-0',
+            'error': 'Missing Content-MD5 header.',
+        }
+
+    @inlineCallbacks
+    def test_import_bad_content_md5(self):
+        yield self.pool.create_tables()
+
+        resp = yield self.put_import('req-0', 'content', 'badmd5', 400)
+        assert resp == {
+            'request_id': 'req-0',
+            'error': 'Content-MD5 header does not match content.',
+        }
+
+    @inlineCallbacks
+    def test_import_idempotent(self):
+        yield self.pool.create_tables()
+        yield self.assert_voucher_counts([])
+
+        content = '\n'.join([
+            'operator,denomination,voucher',
+            'Tank,red,Tr0',
+            'Tank,red,Tr1',
+            'Tank,blue,Tb0',
+            'Tank,blue,Tb1',
+            'Link,red,Lr0',
+            'Link,red,Lr1',
+            'Link,blue,Lb0',
+            'Link,blue,Lb1',
+        ])
+
+        resp = yield self.put_import('req-0', content)
+        assert resp == {
+            'request_id': 'req-0',
+            'imported': True,
+        }
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ])
+
+        resp = yield self.put_import('req-0', content)
+        assert resp == {
+            'request_id': 'req-0',
+            'imported': True,
+        }
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ])
+
+        content_2 = '\n'.join([
+            'operator,denomination,voucher',
+            'Tank,red,Tr0',
+            'Tank,red,Tr1',
+            'Tank,blue,Tb0',
+            'Tank,blue,Tb1',
+        ])
+
+        resp = yield self.put_import('req-0', content_2, expected_code=400)
+        assert resp == {
+            'request_id': 'req-0',
+            'error': (
+                'This import has already been performed with different'
+                ' content.'),
+        }
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ])

@@ -3,7 +3,7 @@ from datetime import datetime
 from twisted.trial.unittest import TestCase
 
 from airtime_service.models import (
-    get_engine, VoucherPool, NoVoucherAvailable, NoVoucherPool)
+    get_engine, VoucherPool, NoVoucherAvailable, NoVoucherPool, AuditMismatch)
 
 from .doubles import FakeReactorThreads
 from .helpers import populate_pool, mk_audit_params
@@ -41,7 +41,7 @@ class TestVoucherPool(TestCase):
         pool = VoucherPool('testpool', self.conn)
         self.successResultOf(pool.create_tables())
 
-        self.successResultOf(pool.import_vouchers([
+        self.successResultOf(pool.import_vouchers('req-0', 'md5-0', [
             {'operator': 'Tank', 'denomination': 'red', 'voucher': 'Tr0'},
             {'operator': 'Tank', 'denomination': 'red', 'voucher': 'Tr1'},
             {'operator': 'Tank', 'denomination': 'blue', 'voucher': 'Tb0'},
@@ -57,6 +57,41 @@ class TestVoucherPool(TestCase):
             ('Tank', 'blue', False, 2),
             ('Tank', 'red', False, 2),
         ])
+
+    def test_import_vouchers_idempotence(self):
+        pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
+
+        vouchers = [
+            {'operator': 'Tank', 'denomination': 'red', 'voucher': 'Tr0'},
+            {'operator': 'Tank', 'denomination': 'red', 'voucher': 'Tr1'},
+            {'operator': 'Tank', 'denomination': 'blue', 'voucher': 'Tb0'},
+            {'operator': 'Tank', 'denomination': 'blue', 'voucher': 'Tb1'},
+            {'operator': 'Link', 'denomination': 'red', 'voucher': 'Lr0'},
+            {'operator': 'Link', 'denomination': 'red', 'voucher': 'Lr1'},
+            {'operator': 'Link', 'denomination': 'blue', 'voucher': 'Lb0'},
+            {'operator': 'Link', 'denomination': 'blue', 'voucher': 'Lb1'},
+        ]
+
+        expected_vouchers = [
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ]
+
+        self.successResultOf(pool.import_vouchers('req-0', 'md5-0', vouchers))
+        self.assert_voucher_counts(pool, expected_vouchers)
+
+        # Again, with the same request.
+        self.successResultOf(pool.import_vouchers('req-0', 'md5-0', vouchers))
+        self.assert_voucher_counts(pool, expected_vouchers)
+
+        # Same request, different content.
+        self.failureResultOf(
+            pool.import_vouchers('req-0', 'md5-1', vouchers[:2]),
+            AuditMismatch)
+        self.assert_voucher_counts(pool, expected_vouchers)
 
     def test_issue_voucher(self):
         pool = VoucherPool('testpool', self.conn)
@@ -100,6 +135,11 @@ class TestVoucherPool(TestCase):
         assert voucher['denomination'] == 'red'
         assert voucher['voucher'] == 'Tank-red-0'
         self.assert_voucher_counts(pool, [('Tank', 'red', True, 1)])
+
+        # Reuse the same request_id but with different parameters.
+        audit_params_2 = mk_audit_params('req-0', transaction_id='foo')
+        self.failureResultOf(
+            pool.issue_voucher('Tank', 'red', audit_params_2), AuditMismatch)
 
     def test_issue_voucher_idempotent_not_available(self):
         pool = VoucherPool('testpool', self.conn)
