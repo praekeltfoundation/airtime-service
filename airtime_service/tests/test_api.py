@@ -368,29 +368,26 @@ class TestVoucherPool(TestCase):
             'Link,blue,Lb1',
         ])
 
-        resp = yield self.put_import('req-0', content)
-        assert resp == {
-            'request_id': 'req-0',
-            'imported': True,
-        }
-        yield self.assert_voucher_counts([
+        expected_counts = [
             ('Link', 'blue', False, 2),
             ('Link', 'red', False, 2),
             ('Tank', 'blue', False, 2),
             ('Tank', 'red', False, 2),
-        ])
+        ]
 
         resp = yield self.put_import('req-0', content)
         assert resp == {
             'request_id': 'req-0',
             'imported': True,
         }
-        yield self.assert_voucher_counts([
-            ('Link', 'blue', False, 2),
-            ('Link', 'red', False, 2),
-            ('Tank', 'blue', False, 2),
-            ('Tank', 'red', False, 2),
-        ])
+        yield self.assert_voucher_counts(expected_counts)
+
+        resp = yield self.put_import('req-0', content)
+        assert resp == {
+            'request_id': 'req-0',
+            'imported': True,
+        }
+        yield self.assert_voucher_counts(expected_counts)
 
         content_2 = '\n'.join([
             'operator,denomination,voucher',
@@ -407,9 +404,4 @@ class TestVoucherPool(TestCase):
                 'This import has already been performed with different'
                 ' content.'),
         }
-        yield self.assert_voucher_counts([
-            ('Link', 'blue', False, 2),
-            ('Link', 'red', False, 2),
-            ('Tank', 'blue', False, 2),
-            ('Tank', 'red', False, 2),
-        ])
+        yield self.assert_voucher_counts(expected_counts)
