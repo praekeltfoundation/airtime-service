@@ -6,7 +6,7 @@ from airtime_service.models import (
     get_engine, VoucherPool, NoVoucherAvailable, NoVoucherPool, AuditMismatch)
 
 from .doubles import FakeReactorThreads
-from .helpers import populate_pool, mk_audit_params
+from .helpers import populate_pool, mk_audit_params, sorted_dicts, voucher_dict
 
 
 class TestVoucherPool(TestCase):
@@ -274,3 +274,193 @@ class TestVoucherPool(TestCase):
             'error': False,
             'created_at': created_at_1,
         }]
+
+    def test_export_all_vouchers(self):
+        pool = VoucherPool('testpool', self.conn)
+        populate_pool(pool, ['Tank', 'Link'], ['red', 'blue'], [0, 1])
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ])
+
+        response = self.successResultOf(
+            pool.export_vouchers('req-0', None, None, None))
+        assert set(response.keys()) == set(['vouchers', 'warnings'])
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+            voucher_dict('Tank', 'red', 'Tank-red-1'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-1'),
+            voucher_dict('Link', 'red', 'Link-red-0'),
+            voucher_dict('Link', 'red', 'Link-red-1'),
+            voucher_dict('Link', 'blue', 'Link-blue-0'),
+            voucher_dict('Link', 'blue', 'Link-blue-1'),
+        ])
+
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', True, 2),
+            ('Link', 'red', True, 2),
+            ('Tank', 'blue', True, 2),
+            ('Tank', 'red', True, 2),
+        ])
+
+    def test_export_some_vouchers(self):
+        pool = VoucherPool('testpool', self.conn)
+        # We give all vouchers of the same type the same voucher code to avoid
+        # having to check all the permutations.
+        populate_pool(pool, ['Tank', 'Link'], ['red', 'blue'], [0, 0, 0])
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 3),
+            ('Link', 'red', False, 3),
+            ('Tank', 'blue', False, 3),
+            ('Tank', 'red', False, 3),
+        ])
+
+        response = self.successResultOf(pool.export_vouchers(
+            'req-0', 1, ['Tank'], ['red']))
+        assert set(response.keys()) == set(['vouchers', 'warnings'])
+        assert response['warnings'] == []
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+        ])
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 3),
+            ('Link', 'red', False, 3),
+            ('Tank', 'blue', False, 3),
+            ('Tank', 'red', False, 2),
+            ('Tank', 'red', True, 1),
+        ])
+
+        response = self.successResultOf(pool.export_vouchers(
+            'req-1', 1, ['Tank', 'Link'], ['red', 'blue']))
+        assert set(response.keys()) == set(['vouchers', 'warnings'])
+        assert response['warnings'] == []
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+            voucher_dict('Link', 'red', 'Link-red-0'),
+            voucher_dict('Link', 'blue', 'Link-blue-0'),
+        ])
+
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 1),
+            ('Link', 'blue', True, 1),
+            ('Link', 'red', True, 1),
+            ('Tank', 'blue', True, 1),
+            ('Tank', 'red', True, 2),
+        ])
+
+    def test_export_too_many_vouchers(self):
+        pool = VoucherPool('testpool', self.conn)
+        # We give all vouchers of the same type the same voucher code to avoid
+        # having to check all the permutations.
+        populate_pool(pool, ['Tank', 'Link'], ['red', 'blue'], [0, 0, 0])
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 3),
+            ('Link', 'red', False, 3),
+            ('Tank', 'blue', False, 3),
+            ('Tank', 'red', False, 3),
+        ])
+
+        response = self.successResultOf(pool.export_vouchers(
+            'req-0', 4, ['Tank'], ['red']))
+        assert set(response.keys()) == set(['vouchers', 'warnings'])
+        assert response['warnings'] == [
+            "Insufficient vouchers available for 'Tank' 'red'.",
+        ]
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+        ])
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 3),
+            ('Link', 'red', False, 3),
+            ('Tank', 'blue', False, 3),
+            ('Tank', 'red', True, 3),
+        ])
+
+        response = self.successResultOf(pool.export_vouchers(
+            'req-1', 1, ['Tank'], ['red', 'blue']))
+        assert set(response.keys()) == set(['vouchers', 'warnings'])
+        assert response['warnings'] == [
+            "Insufficient vouchers available for 'Tank' 'red'.",
+        ]
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+        ])
+
+        response = self.successResultOf(pool.export_vouchers(
+            'req-2', 3, ['Tank', 'Link'], ['red', 'blue']))
+        assert set(response.keys()) == set(['vouchers', 'warnings'])
+        assert sorted(response['warnings']) == sorted([
+            "Insufficient vouchers available for 'Tank' 'red'.",
+            "Insufficient vouchers available for 'Tank' 'blue'.",
+        ])
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+            voucher_dict('Link', 'red', 'Link-red-0'),
+            voucher_dict('Link', 'red', 'Link-red-0'),
+            voucher_dict('Link', 'red', 'Link-red-0'),
+            voucher_dict('Link', 'blue', 'Link-blue-0'),
+            voucher_dict('Link', 'blue', 'Link-blue-0'),
+            voucher_dict('Link', 'blue', 'Link-blue-0'),
+        ])
+
+    def test_export_idempotent(self):
+        pool = VoucherPool('testpool', self.conn)
+        # We give all vouchers of the same type the same voucher code to avoid
+        # having to check all the permutations.
+        populate_pool(pool, ['Tank', 'Link'], ['red', 'blue'], [0, 0, 0])
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 3),
+            ('Link', 'red', False, 3),
+            ('Tank', 'blue', False, 3),
+            ('Tank', 'red', False, 3),
+        ])
+
+        response = self.successResultOf(pool.export_vouchers(
+            'req-0', 1, ['Tank'], ['red']))
+        assert set(response.keys()) == set(['vouchers', 'warnings'])
+        assert response['warnings'] == []
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+        ])
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 3),
+            ('Link', 'red', False, 3),
+            ('Tank', 'blue', False, 3),
+            ('Tank', 'red', False, 2),
+            ('Tank', 'red', True, 1),
+        ])
+
+        response = self.successResultOf(pool.export_vouchers(
+            'req-0', 1, ['Tank'], ['red']))
+        assert set(response.keys()) == set(['vouchers', 'warnings'])
+        assert response['warnings'] == []
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+        ])
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 3),
+            ('Link', 'red', False, 3),
+            ('Tank', 'blue', False, 3),
+            ('Tank', 'red', False, 2),
+            ('Tank', 'red', True, 1),
+        ])
+
+        self.failureResultOf(
+            pool.export_vouchers('req-0', 1, ['Link'], ['red']), AuditMismatch)
+        self.assert_voucher_counts(pool, [
+            ('Link', 'blue', False, 3),
+            ('Link', 'red', False, 3),
+            ('Tank', 'blue', False, 3),
+            ('Tank', 'red', False, 2),
+            ('Tank', 'red', True, 1),
+        ])

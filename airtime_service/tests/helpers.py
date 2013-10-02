@@ -24,3 +24,17 @@ def mk_audit_params(request_id, transaction_id=None, user_id=None):
         'transaction_id': transaction_id,
         'user_id': user_id,
     }
+
+
+def sorted_dicts(dicts):
+    return sorted(dicts, key=lambda d: sorted(d.items()))
+
+
+def voucher_dict(operator, denomination, voucher, **kw):
+    voucher = {
+        'operator': operator,
+        'denomination': denomination,
+        'voucher': voucher,
+    }
+    voucher.update(kw)
+    return voucher
