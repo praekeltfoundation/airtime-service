@@ -17,31 +17,16 @@ from airtime_service.models import VoucherPool
 from .helpers import populate_pool, mk_audit_params, sorted_dicts, voucher_dict
 
 
-class TestVoucherPool(TestCase):
-    timeout = 5
+class ApiClient(object):
+    def __init__(self, base_url):
+        self._base_url = base_url
 
-    @inlineCallbacks
-    def setUp(self):
-        # We need to make sure all our queries run in the same thread,
-        # otherwise sqlite gets very sad.
-        reactor.suggestThreadPoolSize(1)
-        self.asapp = AirtimeServiceApp("sqlite://", reactor=reactor)
-        site = Site(self.asapp.app.resource())
-        self.listener = reactor.listenTCP(0, site, interface='localhost')
-        self.listener_port = self.listener.getHost().port
-        self.conn = yield self.asapp.engine.connect()
-        self.pool = VoucherPool('testpool', self.conn)
-
-    def tearDown(self):
-        return self.listener.loseConnection()
-
-    def make_url(self, url_path):
-        return 'http://localhost:%s/%s' % (
-            self.listener_port, url_path.lstrip('/'))
+    def _make_url(self, url_path):
+        return '%s/%s' % (self._base_url, url_path.lstrip('/'))
 
     def _make_call(self, method, url_path, headers, body, expected_code):
         agent = Agent(reactor)
-        url = self.make_url(url_path)
+        url = self._make_url(url_path)
         d = agent.request(method, url, headers, body)
         return d.addCallback(self._get_response_body, expected_code)
 
@@ -103,6 +88,26 @@ class TestVoucherPool(TestCase):
         params = {'request_id': request_id}
         return self.get('testpool/voucher_counts', params, expected_code)
 
+
+class TestVoucherPool(TestCase):
+    timeout = 5
+
+    @inlineCallbacks
+    def setUp(self):
+        # We need to make sure all our queries run in the same thread,
+        # otherwise sqlite gets very sad.
+        reactor.suggestThreadPoolSize(1)
+        self.asapp = AirtimeServiceApp("sqlite://", reactor=reactor)
+        site = Site(self.asapp.app.resource())
+        self.listener = reactor.listenTCP(0, site, interface='localhost')
+        self.listener_port = self.listener.getHost().port
+        self.conn = yield self.asapp.engine.connect()
+        self.pool = VoucherPool('testpool', self.conn)
+        self.client = ApiClient('http://localhost:%s' % (self.listener_port,))
+
+    def tearDown(self):
+        return self.listener.loseConnection()
+
     @inlineCallbacks
     def assert_voucher_counts(self, expected_rows):
         rows = yield self.pool.count_vouchers()
@@ -112,7 +117,7 @@ class TestVoucherPool(TestCase):
     def test_request_missing_params(self):
         params = mk_audit_params('req-0')
         params.pop('request_id')
-        rsp = yield self.put_json(
+        rsp = yield self.client.put_json(
             'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
@@ -122,7 +127,7 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_request_missing_audit_params(self):
         params = {'denomination': 'red'}
-        rsp = yield self.put_json(
+        rsp = yield self.client.put_json(
             'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
@@ -138,7 +143,7 @@ class TestVoucherPool(TestCase):
             'denomination': 'red',
             'foo': 'bar',
         })
-        rsp = yield self.put_json(
+        rsp = yield self.client.put_json(
             'testpool/issue/Tank/req-0', params, expected_code=400)
         assert rsp == {
             'request_id': 'req-0',
@@ -147,7 +152,8 @@ class TestVoucherPool(TestCase):
 
     @inlineCallbacks
     def test_issue_missing_pool(self):
-        rsp = yield self.put_issue('req-0', 'Tank', 'red', expected_code=404)
+        rsp = yield self.client.put_issue(
+            'req-0', 'Tank', 'red', expected_code=404)
         assert rsp == {
             'request_id': 'req-0',
             'error': 'Voucher pool does not exist.',
@@ -156,18 +162,18 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_issue_response_contains_request_id(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
-        rsp0 = yield self.put_issue('req-0', 'Tank', 'red')
+        rsp0 = yield self.client.put_issue('req-0', 'Tank', 'red')
         assert rsp0['request_id'] == 'req-0'
 
     @inlineCallbacks
     def test_issue(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
-        rsp0 = yield self.put_issue('req-0', 'Tank', 'red')
+        rsp0 = yield self.client.put_issue('req-0', 'Tank', 'red')
         assert set(rsp0.keys()) == set(['request_id', 'voucher'])
         assert rsp0['request_id'] == 'req-0'
         assert rsp0['voucher'] in ['Tank-red-0', 'Tank-red-1']
 
-        rsp1 = yield self.put_issue('req-1', 'Tank', 'red')
+        rsp1 = yield self.client.put_issue('req-1', 'Tank', 'red')
         assert set(rsp1.keys()) == set(['request_id', 'voucher'])
         assert rsp1['request_id'] == 'req-1'
         assert rsp1['voucher'] in ['Tank-red-0', 'Tank-red-1']
@@ -177,7 +183,7 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_issue_idempotent(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0])
-        rsp0 = yield self.put_issue('req-0', 'Tank', 'red')
+        rsp0 = yield self.client.put_issue('req-0', 'Tank', 'red')
         assert rsp0 == {
             'request_id': 'req-0',
             'voucher': 'Tank-red-0',
@@ -185,19 +191,20 @@ class TestVoucherPool(TestCase):
 
         yield populate_pool(self.pool, ['Tank'], ['red'], [1])
 
-        rsp1 = yield self.put_issue('req-0', 'Tank', 'red')
+        rsp1 = yield self.client.put_issue('req-0', 'Tank', 'red')
         assert rsp1 == {
             'request_id': 'req-0',
             'voucher': 'Tank-red-0',
         }
 
-        rsp2 = yield self.put_issue('req-1', 'Tank', 'red')
+        rsp2 = yield self.client.put_issue('req-1', 'Tank', 'red')
         assert rsp2 == {
             'request_id': 'req-1',
             'voucher': 'Tank-red-1',
         }
 
-        rsp3 = yield self.put_issue('req-1', 'Tank', 'blue', expected_code=400)
+        rsp3 = yield self.client.put_issue(
+            'req-1', 'Tank', 'blue', expected_code=400)
         assert rsp3 == {
             'request_id': 'req-1',
             'error': (
@@ -208,7 +215,7 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_issue_no_voucher(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0])
-        rsp = yield self.put_issue('req-0', 'Tank', 'blue')
+        rsp = yield self.client.put_issue('req-0', 'Tank', 'blue')
         assert rsp == {
             'request_id': 'req-0',
             'error': 'No voucher available.',
@@ -242,7 +249,8 @@ class TestVoucherPool(TestCase):
         yield self.pool.create_tables()
 
         audit_params = mk_audit_params('req-0')
-        rsp = yield self.get_audit_query('audit-0', 'request_id', 'req-0')
+        rsp = yield self.client.get_audit_query(
+            'audit-0', 'request_id', 'req-0')
         assert rsp == {
             'request_id': 'audit-0',
             'results': [],
@@ -250,7 +258,8 @@ class TestVoucherPool(TestCase):
 
         yield self.pool._audit_request(audit_params, 'req_data', 'resp_data')
 
-        rsp = yield self.get_audit_query('audit-1', 'request_id', 'req-0')
+        rsp = yield self.client.get_audit_query(
+            'audit-1', 'request_id', 'req-0')
 
         self._assert_audit_entries('audit-1', rsp, [{
             'audit_params': audit_params,
@@ -265,7 +274,7 @@ class TestVoucherPool(TestCase):
 
         audit_params_0 = mk_audit_params('req-0', 'transaction-0')
         audit_params_1 = mk_audit_params('req-1', 'transaction-0')
-        rsp = yield self.get_audit_query(
+        rsp = yield self.client.get_audit_query(
             'audit-0', 'transaction_id', 'transaction-0')
         assert rsp == {
             'request_id': 'audit-0',
@@ -277,7 +286,7 @@ class TestVoucherPool(TestCase):
         yield self.pool._audit_request(
             audit_params_1, 'req_data_1', 'resp_data_1')
 
-        rsp = yield self.get_audit_query(
+        rsp = yield self.client.get_audit_query(
             'audit-1', 'transaction_id', 'transaction-0')
 
         self._assert_audit_entries('audit-1', rsp, [{
@@ -298,7 +307,7 @@ class TestVoucherPool(TestCase):
 
         audit_params_0 = mk_audit_params('req-0', 'transaction-0', 'user-0')
         audit_params_1 = mk_audit_params('req-1', 'transaction-1', 'user-0')
-        rsp = yield self.get_audit_query('audit-0', 'user_id', 'user-0')
+        rsp = yield self.client.get_audit_query('audit-0', 'user_id', 'user-0')
         assert rsp == {
             'request_id': 'audit-0',
             'results': [],
@@ -309,7 +318,7 @@ class TestVoucherPool(TestCase):
         yield self.pool._audit_request(
             audit_params_1, 'req_data_1', 'resp_data_1')
 
-        rsp = yield self.get_audit_query('audit-1', 'user_id', 'user-0')
+        rsp = yield self.client.get_audit_query('audit-1', 'user_id', 'user-0')
 
         self._assert_audit_entries('audit-1', rsp, [{
             'audit_params': audit_params_0,
@@ -340,7 +349,7 @@ class TestVoucherPool(TestCase):
             'Link,blue,Lb1',
         ])
 
-        resp = yield self.put_import('req-0', content)
+        resp = yield self.client.put_import('req-0', content)
         assert resp == {
             'request_id': 'req-0',
             'imported': True,
@@ -369,7 +378,7 @@ class TestVoucherPool(TestCase):
             'Link,blue,Lb1',
         ])
 
-        resp = yield self.put_import('req-0', content)
+        resp = yield self.client.put_import('req-0', content)
         assert resp == {
             'request_id': 'req-0',
             'imported': True,
@@ -385,7 +394,8 @@ class TestVoucherPool(TestCase):
     def test_import_no_content_md5(self):
         yield self.pool.create_tables()
 
-        resp = yield self.put_import('req-0', 'content', '', 400)
+        resp = yield self.client.put_import(
+            'req-0', 'content', '', expected_code=400)
         assert resp == {
             'request_id': 'req-0',
             'error': 'Missing Content-MD5 header.',
@@ -395,7 +405,8 @@ class TestVoucherPool(TestCase):
     def test_import_bad_content_md5(self):
         yield self.pool.create_tables()
 
-        resp = yield self.put_import('req-0', 'content', 'badmd5', 400)
+        resp = yield self.client.put_import(
+            'req-0', 'content', 'badmd5', expected_code=400)
         assert resp == {
             'request_id': 'req-0',
             'error': 'Content-MD5 header does not match content.',
@@ -425,14 +436,14 @@ class TestVoucherPool(TestCase):
             ('Tank', 'red', False, 2),
         ]
 
-        resp = yield self.put_import('req-0', content)
+        resp = yield self.client.put_import('req-0', content)
         assert resp == {
             'request_id': 'req-0',
             'imported': True,
         }
         yield self.assert_voucher_counts(expected_counts)
 
-        resp = yield self.put_import('req-0', content)
+        resp = yield self.client.put_import('req-0', content)
         assert resp == {
             'request_id': 'req-0',
             'imported': True,
@@ -447,7 +458,8 @@ class TestVoucherPool(TestCase):
             'Tank,blue,Tb1',
         ])
 
-        resp = yield self.put_import('req-0', content_2, expected_code=400)
+        resp = yield self.client.put_import(
+            'req-0', content_2, expected_code=400)
         assert resp == {
             'request_id': 'req-0',
             'error': (
@@ -463,14 +475,14 @@ class TestVoucherPool(TestCase):
     @inlineCallbacks
     def test_voucher_counts(self):
         yield self.pool.create_tables()
-        rsp0 = yield self.get_voucher_counts('req-0')
+        rsp0 = yield self.client.get_voucher_counts('req-0')
         assert rsp0 == {
             'request_id': 'req-0',
             'voucher_counts': [],
         }
 
         yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
-        rsp1 = yield self.get_voucher_counts('req-1')
+        rsp1 = yield self.client.get_voucher_counts('req-1')
         assert rsp1 == {
             'request_id': 'req-1',
             'voucher_counts': [
@@ -485,7 +497,7 @@ class TestVoucherPool(TestCase):
 
         yield populate_pool(self.pool, ['Link'], ['blue'], [0, 1])
         yield self.pool.issue_voucher('Link', 'blue', mk_audit_params('req-0'))
-        rsp2 = yield self.get_voucher_counts('req-2')
+        rsp2 = yield self.client.get_voucher_counts('req-2')
         assert self._sorted_voucher_counts(rsp2['voucher_counts']) == [
             {
                 'operator': 'Link',
@@ -512,7 +524,7 @@ class TestVoucherPool(TestCase):
         yield populate_pool(
             self.pool, ['Tank', 'Link'], ['red', 'blue'], [0, 1])
 
-        response = yield self.put_export('req-0')
+        response = yield self.client.put_export('req-0')
         assert set(response.keys()) == set([
             'request_id', 'vouchers', 'warnings'])
         assert response['request_id'] == 'req-0'
@@ -548,7 +560,8 @@ class TestVoucherPool(TestCase):
             ('Tank', 'red', False, 2),
         ])
 
-        response = yield self.put_export('req-0', 1, ['Tank'], ['red', 'blue'])
+        response = yield self.client.put_export(
+            'req-0', 1, ['Tank'], ['red', 'blue'])
         assert set(response.keys()) == set([
             'request_id', 'vouchers', 'warnings'])
         assert response['request_id'] == 'req-0'
@@ -580,7 +593,8 @@ class TestVoucherPool(TestCase):
             ('Tank', 'red', False, 2),
         ])
 
-        response = yield self.put_export('req-0', 4, ['Tank'], ['red', 'blue'])
+        response = yield self.client.put_export(
+            'req-0', 4, ['Tank'], ['red', 'blue'])
         assert set(response.keys()) == set([
             'request_id', 'vouchers', 'warnings'])
         assert response['request_id'] == 'req-0'
@@ -611,7 +625,7 @@ class TestVoucherPool(TestCase):
             ('Tank', 'red', False, 1),
         ])
 
-        response = yield self.put_export('req-0', 1, ['Tank'], ['red'])
+        response = yield self.client.put_export('req-0', 1, ['Tank'], ['red'])
         assert set(response.keys()) == set([
             'request_id', 'vouchers', 'warnings'])
         assert response['request_id'] == 'req-0'
@@ -626,7 +640,7 @@ class TestVoucherPool(TestCase):
             ('Tank', 'red', True, 1),
         ])
 
-        response = yield self.put_export('req-0', 1, ['Tank'], ['red'])
+        response = yield self.client.put_export('req-0', 1, ['Tank'], ['red'])
         assert set(response.keys()) == set([
             'request_id', 'vouchers', 'warnings'])
         assert response['request_id'] == 'req-0'
@@ -641,7 +655,7 @@ class TestVoucherPool(TestCase):
             ('Tank', 'red', True, 1),
         ])
 
-        response = yield self.put_export(
+        response = yield self.client.put_export(
             'req-0', 2, ['Tank'], ['red'], expected_code=400)
         assert response == {
             'request_id': 'req-0',
