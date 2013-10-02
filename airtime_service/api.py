@@ -52,7 +52,13 @@ class AirtimeServiceApp(object):
     def handle_api_error(self, failure, request):
         # failure.printTraceback()
         error = failure.value
-        if not failure.check(APIError):
+        if failure.check(NoVoucherPool):
+            error = APIError('Voucher pool does not exist.', 404)
+        elif failure.check(AuditMismatch):
+            error = BadRequestParams(
+                "This request has already been performed with different"
+                " parameters.")
+        elif not failure.check(APIError):
             # TODO: Log something appropriately dire.
             error = APIError('Internal server error.')
         return self.format_error(request, error)
@@ -118,15 +124,9 @@ class AirtimeServiceApp(object):
         try:
             voucher = yield pool.issue_voucher(
                 operator, params['denomination'], audit_params)
-        except NoVoucherPool:
-            raise APIError('Voucher pool does not exist.', 404)
         except NoVoucherAvailable:
             # This is a normal condition, so we still return a 200 OK.
             raise APIError('No voucher available.', 200)
-        except AuditMismatch:
-            raise BadRequestParams(
-                "This request has already been performed with different"
-                " parameters.")
         finally:
             yield conn.close()
 
@@ -182,10 +182,6 @@ class AirtimeServiceApp(object):
         pool = VoucherPool(voucher_pool, conn)
         try:
             yield pool.import_vouchers(request_id, content_md5, row_iter)
-        except AuditMismatch:
-            raise BadRequestParams(
-                "This import has already been performed with different"
-                " content.")
         finally:
             yield conn.close()
 

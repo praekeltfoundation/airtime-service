@@ -436,8 +436,8 @@ class TestVoucherPool(TestCase):
         assert resp == {
             'request_id': 'req-0',
             'error': (
-                'This import has already been performed with different'
-                ' content.'),
+                'This request has already been performed with different'
+                ' parameters.'),
         }
         yield self.assert_voucher_counts(expected_counts)
 
