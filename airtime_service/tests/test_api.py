@@ -160,6 +160,37 @@ class TestVoucherPool(TestCase):
         assert rsp0['voucher'] != rsp1['voucher']
 
     @inlineCallbacks
+    def test_issue_idempotent(self):
+        yield populate_pool(self.pool, ['Tank'], ['red'], [0])
+        rsp0 = yield self.put_issue('req-0', 'Tank', 'red')
+        assert rsp0 == {
+            'request_id': 'req-0',
+            'voucher': 'Tank-red-0',
+        }
+
+        yield populate_pool(self.pool, ['Tank'], ['red'], [1])
+
+        rsp1 = yield self.put_issue('req-0', 'Tank', 'red')
+        assert rsp1 == {
+            'request_id': 'req-0',
+            'voucher': 'Tank-red-0',
+        }
+
+        rsp2 = yield self.put_issue('req-1', 'Tank', 'red')
+        assert rsp2 == {
+            'request_id': 'req-1',
+            'voucher': 'Tank-red-1',
+        }
+
+        rsp3 = yield self.put_issue('req-1', 'Tank', 'blue', expected_code=400)
+        assert rsp3 == {
+            'request_id': 'req-1',
+            'error': (
+                'This request has already been performed with different'
+                ' parameters.'),
+        }
+
+    @inlineCallbacks
     def test_issue_no_voucher(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0])
         rsp = yield self.put_issue('req-0', 'Tank', 'blue')

@@ -123,6 +123,10 @@ class AirtimeServiceApp(object):
         except NoVoucherAvailable:
             # This is a normal condition, so we still return a 200 OK.
             raise APIError('No voucher available.', 200)
+        except AuditMismatch:
+            raise BadRequestParams(
+                "This request has already been performed with different"
+                " parameters.")
         finally:
             yield conn.close()
 
@@ -180,7 +184,8 @@ class AirtimeServiceApp(object):
             yield pool.import_vouchers(request_id, content_md5, row_iter)
         except AuditMismatch:
             raise BadRequestParams(
-                "This import has already been performed with different content.")
+                "This import has already been performed with different"
+                " content.")
         finally:
             yield conn.close()
 
@@ -189,7 +194,8 @@ class AirtimeServiceApp(object):
 
     @handler('/<string:voucher_pool>/voucher_counts', methods=['GET'])
     def voucher_counts(self, request, voucher_pool):
-        params = self.get_url_params(request, [], ['request_id'])
+        # This sets the request_id on the request object.
+        self.get_url_params(request, [], ['request_id'])
 
         conn = yield self.engine.connect()
         pool = VoucherPool(voucher_pool, conn)
