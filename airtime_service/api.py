@@ -210,6 +210,25 @@ class AirtimeServiceApp(object):
         } for row in rows]
         returnValue(self.format_response(request, voucher_counts=results))
 
+    @handler(
+        '/<string:voucher_pool>/export/<string:request_id>', methods=['PUT'])
+    def export_vouchers(self, request, voucher_pool, request_id):
+        self._set_request_id(request, request_id)
+        params = self.get_json_params(
+            request, [], ['count', 'operators', 'denominations'])
+        conn = yield self.engine.connect()
+        pool = VoucherPool(voucher_pool, conn)
+        try:
+            response = yield pool.export_vouchers(
+                request_id, params.get('count'), params.get('operators'),
+                params.get('denominations'))
+        finally:
+            yield conn.close()
+
+        returnValue(self.format_response(
+            request, vouchers=response['vouchers'],
+            warnings=response['warnings']))
+
 
 def lowercase_row_keys(rows):
     for row in rows:

@@ -14,7 +14,7 @@ from twisted.web.server import Site
 from airtime_service.api import AirtimeServiceApp
 from airtime_service.models import VoucherPool
 
-from .helpers import populate_pool, mk_audit_params
+from .helpers import populate_pool, mk_audit_params, sorted_dicts, voucher_dict
 
 
 class TestVoucherPool(TestCase):
@@ -22,6 +22,9 @@ class TestVoucherPool(TestCase):
 
     @inlineCallbacks
     def setUp(self):
+        # We need to make sure all our queries run in the same thread,
+        # otherwise sqlite gets very sad.
+        reactor.suggestThreadPoolSize(1)
         self.asapp = AirtimeServiceApp("sqlite://", reactor=reactor)
         site = Site(self.asapp.app.resource())
         self.listener = reactor.listenTCP(0, site, interface='localhost')
@@ -79,6 +82,18 @@ class TestVoucherPool(TestCase):
         if content_md5:
             hdict['Content-MD5'] = [content_md5]
         return self.put(url_path, Headers(hdict), content, expected_code)
+
+    def put_export(self, request_id, count=None, operators=None,
+                   denominations=None, expected_code=200):
+        params = {}
+        if count is not None:
+            params['count'] = count
+        if operators is not None:
+            params['operators'] = operators
+        if denominations is not None:
+            params['denominations'] = denominations
+        url_path = 'testpool/export/%s' % (request_id,)
+        return self.put_json(url_path, params, expected_code)
 
     def get_audit_query(self, request_id, field, value, expected_code=200):
         params = {'request_id': request_id, 'field': field, 'value': value}
@@ -491,3 +506,146 @@ class TestVoucherPool(TestCase):
                 'count': 2,
             },
         ]
+
+    @inlineCallbacks
+    def test_export_all_vouchers(self):
+        yield populate_pool(
+            self.pool, ['Tank', 'Link'], ['red', 'blue'], [0, 1])
+
+        response = yield self.put_export('req-0')
+        assert set(response.keys()) == set([
+            'request_id', 'vouchers', 'warnings'])
+        assert response['request_id'] == 'req-0'
+        assert response['warnings'] == []
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+            voucher_dict('Tank', 'red', 'Tank-red-1'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-1'),
+            voucher_dict('Link', 'red', 'Link-red-0'),
+            voucher_dict('Link', 'red', 'Link-red-1'),
+            voucher_dict('Link', 'blue', 'Link-blue-0'),
+            voucher_dict('Link', 'blue', 'Link-blue-1'),
+        ])
+
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', True, 2),
+            ('Link', 'red', True, 2),
+            ('Tank', 'blue', True, 2),
+            ('Tank', 'red', True, 2),
+        ])
+
+    @inlineCallbacks
+    def test_export_some_vouchers(self):
+        # We give all vouchers of the same type the same voucher code to avoid
+        # having to check all the permutations.
+        yield populate_pool(
+            self.pool, ['Tank', 'Link'], ['red', 'blue'], [0, 0])
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ])
+
+        response = yield self.put_export('req-0', 1, ['Tank'], ['red', 'blue'])
+        assert set(response.keys()) == set([
+            'request_id', 'vouchers', 'warnings'])
+        assert response['request_id'] == 'req-0'
+        assert response['warnings'] == []
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+        ])
+
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 1),
+            ('Tank', 'red', False, 1),
+            ('Tank', 'blue', True, 1),
+            ('Tank', 'red', True, 1),
+        ])
+
+    @inlineCallbacks
+    def test_export_too_many_vouchers(self):
+        # We give all vouchers of the same type the same voucher code to avoid
+        # having to check all the permutations.
+        yield populate_pool(
+            self.pool, ['Tank', 'Link'], ['red', 'blue'], [0, 0])
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', False, 2),
+            ('Tank', 'red', False, 2),
+        ])
+
+        response = yield self.put_export('req-0', 4, ['Tank'], ['red', 'blue'])
+        assert set(response.keys()) == set([
+            'request_id', 'vouchers', 'warnings'])
+        assert response['request_id'] == 'req-0'
+        assert sorted(response['warnings']) == sorted([
+            "Insufficient vouchers available for 'Tank' 'red'.",
+            "Insufficient vouchers available for 'Tank' 'blue'.",
+        ])
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+            voucher_dict('Tank', 'blue', 'Tank-blue-0'),
+        ])
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 2),
+            ('Link', 'red', False, 2),
+            ('Tank', 'blue', True, 2),
+            ('Tank', 'red', True, 2),
+        ])
+
+    @inlineCallbacks
+    def test_export_idempotent(self):
+        yield populate_pool(self.pool, ['Tank', 'Link'], ['red', 'blue'], [0])
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 1),
+            ('Link', 'red', False, 1),
+            ('Tank', 'blue', False, 1),
+            ('Tank', 'red', False, 1),
+        ])
+
+        response = yield self.put_export('req-0', 1, ['Tank'], ['red'])
+        assert set(response.keys()) == set([
+            'request_id', 'vouchers', 'warnings'])
+        assert response['request_id'] == 'req-0'
+        assert response['warnings'] == []
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+        ])
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 1),
+            ('Link', 'red', False, 1),
+            ('Tank', 'blue', False, 1),
+            ('Tank', 'red', True, 1),
+        ])
+
+        response = yield self.put_export('req-0', 1, ['Tank'], ['red'])
+        assert set(response.keys()) == set([
+            'request_id', 'vouchers', 'warnings'])
+        assert response['request_id'] == 'req-0'
+        assert response['warnings'] == []
+        assert sorted_dicts(response['vouchers']) == sorted_dicts([
+            voucher_dict('Tank', 'red', 'Tank-red-0'),
+        ])
+        yield self.assert_voucher_counts([
+            ('Link', 'blue', False, 1),
+            ('Link', 'red', False, 1),
+            ('Tank', 'blue', False, 1),
+            ('Tank', 'red', True, 1),
+        ])
+
+        response = yield self.put_export(
+            'req-0', 2, ['Tank'], ['red'], expected_code=400)
+        assert response == {
+            'request_id': 'req-0',
+            'error': (
+                'This request has already been performed with different'
+                ' parameters.'),
+        }
