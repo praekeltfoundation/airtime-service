@@ -7,6 +7,7 @@ import json
 from klein import Klein
 
 from twisted.internet.defer import inlineCallbacks, returnValue
+from twisted.python import log
 
 from airtime_service.models import (
     get_engine, VoucherPool, NoVoucherPool, NoVoucherAvailable, AuditMismatch,
@@ -59,7 +60,7 @@ class AirtimeServiceApp(object):
                 "This request has already been performed with different"
                 " parameters.")
         elif not failure.check(APIError):
-            # TODO: Log something appropriately dire.
+            log.err(failure)
             error = APIError('Internal server error.')
         return self.format_error(request, error)
 
