@@ -1,12 +1,12 @@
 from StringIO import StringIO
 import csv
-from functools import wraps
+from functools import partial, update_wrapper
 from hashlib import md5
 import json
 
 from klein import Klein
 
-from twisted.internet.defer import inlineCallbacks, returnValue
+from twisted.internet.defer import inlineCallbacks, returnValue, maybeDeferred
 from twisted.python import log
 
 from airtime_service.models import (
@@ -27,28 +27,37 @@ class BadRequestParams(APIError):
     code = 400
 
 
-_airtime_service_app = Klein()
+def service(cls):
+    cls.app = Klein()
+    for attr in dir(cls):
+        meth = getattr(cls, attr)
+        handler_args = getattr(meth, '_handler_args', None)
+        if handler_args is not None:
+            wrapper = partial(_handler_wrapper, meth)
+            update_wrapper(wrapper, meth)
+            route = cls.app.route(*handler_args[0], **handler_args[1])
+            wrapper = route(wrapper)
+            setattr(cls, attr, wrapper)
+    return cls
 
 
+def handler(*args, **kw):
+    def deco(func):
+        func._handler_args = (args, kw)
+        return func
+    return deco
+
+
+def _handler_wrapper(func, self, request, *args, **kw):
+    d = maybeDeferred(func, self, request, *args, **kw)
+    d.addErrback(self.handle_api_error, request)
+    return d
+
+
+@service
 class AirtimeServiceApp(object):
-    app = _airtime_service_app
-
     def __init__(self, conn_str, reactor):
         self.engine = get_engine(conn_str, reactor)
-
-    def handler(*args, **kw):
-
-        def decorator(func):
-            func = inlineCallbacks(func)
-            route = _airtime_service_app.route(*args, **kw)
-
-            @wraps(func)
-            def wrapper(self, request, *args, **kw):
-                d = func(self, request, *args, **kw)
-                d.addErrback(self.handle_api_error, request)
-                return d
-            return route(wrapper)
-        return decorator
 
     def handle_api_error(self, failure, request):
         # failure.printTraceback()
@@ -111,6 +120,7 @@ class AirtimeServiceApp(object):
     @handler(
         '/<string:voucher_pool>/issue/<string:operator>/<string:request_id>',
         methods=['PUT'])
+    @inlineCallbacks
     def issue_voucher(self, request, voucher_pool, operator, request_id):
         self._set_request_id(request, request_id)
         params = self.get_json_params(
@@ -134,6 +144,7 @@ class AirtimeServiceApp(object):
         returnValue(self.format_response(request, voucher=voucher['voucher']))
 
     @handler('/<string:voucher_pool>/audit_query', methods=['GET'])
+    @inlineCallbacks
     def audit_query(self, request, voucher_pool):
         params = self.get_url_params(
             request, ['field', 'value'], ['request_id'])
@@ -165,6 +176,7 @@ class AirtimeServiceApp(object):
 
     @handler(
         '/<string:voucher_pool>/import/<string:request_id>', methods=['PUT'])
+    @inlineCallbacks
     def import_vouchers(self, request, voucher_pool, request_id):
         self._set_request_id(request, request_id)
         content_md5 = request.requestHeaders.getRawHeaders('Content-MD5')
@@ -190,6 +202,7 @@ class AirtimeServiceApp(object):
         returnValue(self.format_response(request, imported=True))
 
     @handler('/<string:voucher_pool>/voucher_counts', methods=['GET'])
+    @inlineCallbacks
     def voucher_counts(self, request, voucher_pool):
         # This sets the request_id on the request object.
         self.get_url_params(request, [], ['request_id'])
@@ -213,6 +226,7 @@ class AirtimeServiceApp(object):
 
     @handler(
         '/<string:voucher_pool>/export/<string:request_id>', methods=['PUT'])
+    @inlineCallbacks
     def export_vouchers(self, request, voucher_pool, request_id):
         self._set_request_id(request, request_id)
         params = self.get_json_params(
