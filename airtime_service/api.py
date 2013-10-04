@@ -27,76 +27,62 @@ class BadRequestParams(APIError):
     code = 400
 
 
-def service(cls):
-    cls.app = Klein()
-    for attr in dir(cls):
-        meth = getattr(cls, attr)
-        handler_args = getattr(meth, '_handler_args', None)
-        if handler_args is not None:
-            wrapper = partial(_handler_wrapper, meth)
-            update_wrapper(wrapper, meth)
-            route = cls.app.route(*handler_args[0], **handler_args[1])
-            wrapper = route(wrapper)
-            setattr(cls, attr, wrapper)
-    return cls
+class Service(object):
+    @staticmethod
+    def handler(*args, **kw):
+        def deco(func):
+            func._handler_args = (args, kw)
+            return func
+        return deco
 
+    @classmethod
+    def service(cls, service_class):
+        service_class.app = Klein()
+        for attr in dir(service_class):
+            meth = getattr(service_class, attr)
+            if hasattr(meth, '_handler_args'):
+                handler = cls._make_handler(service_class, meth)
+                setattr(service_class, attr, handler)
+        return service_class
 
-def handler(*args, **kw):
-    def deco(func):
-        func._handler_args = (args, kw)
-        return func
-    return deco
+    @classmethod
+    def _make_handler(cls, service_class, handler_method):
+        args, kw = handler_method._handler_args
+        wrapper = partial(cls._handler_wrapper, handler_method)
+        update_wrapper(wrapper, handler_method)
+        route = service_class.app.route(*args, **kw)
+        return route(wrapper)
 
+    @classmethod
+    def _handler_wrapper(cls, func, self, request, *args, **kw):
+        d = maybeDeferred(func, self, request, *args, **kw)
+        d.addCallback(cls._format_response, request)
+        d.addErrback(self.handle_api_error, request)
+        d.addErrback(cls._handle_api_error, request)
+        return d
 
-def _handler_wrapper(func, self, request, *args, **kw):
-    d = maybeDeferred(func, self, request, *args, **kw)
-    d.addErrback(self.handle_api_error, request)
-    return d
-
-
-@service
-class AirtimeServiceApp(object):
-    def __init__(self, conn_str, reactor):
-        self.engine = get_engine(conn_str, reactor)
-
-    def handle_api_error(self, failure, request):
-        # failure.printTraceback()
+    @staticmethod
+    def _handle_api_error(failure, request):
         error = failure.value
-        if failure.check(NoVoucherPool):
-            error = APIError('Voucher pool does not exist.', 404)
-        elif failure.check(AuditMismatch):
-            error = BadRequestParams(
-                "This request has already been performed with different"
-                " parameters.")
-        elif not failure.check(APIError):
+        if not failure.check(APIError):
             log.err(failure)
             error = APIError('Internal server error.')
-        return self.format_error(request, error)
+        return Service._format_error(request, error)
 
-    def _set_request_id(self, request, request_id):
+    @staticmethod
+    def set_request_id(request, request_id):
         # We name-mangle the attr because `request` isn't our object.
         request.__request_id = request_id
 
-    def _get_request_id(self, request):
+    @staticmethod
+    def get_request_id(request):
         try:
             return request.__request_id
         except AttributeError:
             return None
 
-    def format_response(self, request, **params):
-        request.setHeader('Content-Type', 'application/json')
-        params['request_id'] = self._get_request_id(request)
-        return json.dumps(params)
-
-    def format_error(self, request, error):
-        request.setHeader('Content-Type', 'application/json')
-        request.setResponseCode(error.code)
-        return json.dumps({
-            'request_id': self._get_request_id(request),
-            'error': error.message,
-        })
-
-    def _get_params(self, params, mandatory, optional):
+    @staticmethod
+    def get_params(params, mandatory, optional):
         missing = set(mandatory) - set(params.keys())
         extra = set(params.keys()) - (set(mandatory) | set(optional))
         if missing:
@@ -107,22 +93,53 @@ class AirtimeServiceApp(object):
                 "', '".join(sorted(extra))))
         return params
 
+    @classmethod
+    def _format_response(cls, params, request):
+        request.setHeader('Content-Type', 'application/json')
+        params['request_id'] = cls.get_request_id(request)
+        return json.dumps(params)
+
+    @classmethod
+    def _format_error(cls, request, error):
+        request.setHeader('Content-Type', 'application/json')
+        request.setResponseCode(error.code)
+        return json.dumps({
+            'request_id': cls.get_request_id(request),
+            'error': error.message,
+        })
+
+
+@Service.service
+class AirtimeServiceApp(object):
+    def __init__(self, conn_str, reactor):
+        self.engine = get_engine(conn_str, reactor)
+
+    def handle_api_error(self, failure, request):
+        # failure.printTraceback()
+        if failure.check(NoVoucherPool):
+            raise APIError('Voucher pool does not exist.', 404)
+        if failure.check(AuditMismatch):
+            raise BadRequestParams(
+                "This request has already been performed with different"
+                " parameters.")
+        return failure
+
     def get_json_params(self, request, mandatory, optional=()):
-        return self._get_params(
+        return Service.get_params(
             json.loads(request.content.read()), mandatory, optional)
 
     def get_url_params(self, request, mandatory, optional=()):
         if 'request_id' in request.args:
-            self._set_request_id(request, request.args['request_id'][0])
-        params = self._get_params(request.args, mandatory, optional)
+            Service.set_request_id(request, request.args['request_id'][0])
+        params = Service.get_params(request.args, mandatory, optional)
         return dict((k, v[0]) for k, v in params.iteritems())
 
-    @handler(
+    @Service.handler(
         '/<string:voucher_pool>/issue/<string:operator>/<string:request_id>',
         methods=['PUT'])
     @inlineCallbacks
     def issue_voucher(self, request, voucher_pool, operator, request_id):
-        self._set_request_id(request, request_id)
+        Service.set_request_id(request, request_id)
         params = self.get_json_params(
             request, ['transaction_id', 'user_id', 'denomination'])
         audit_params = {
@@ -141,9 +158,9 @@ class AirtimeServiceApp(object):
         finally:
             yield conn.close()
 
-        returnValue(self.format_response(request, voucher=voucher['voucher']))
+        returnValue({'voucher': voucher['voucher']})
 
-    @handler('/<string:voucher_pool>/audit_query', methods=['GET'])
+    @Service.handler('/<string:voucher_pool>/audit_query', methods=['GET'])
     @inlineCallbacks
     def audit_query(self, request, voucher_pool):
         params = self.get_url_params(
@@ -172,13 +189,13 @@ class AirtimeServiceApp(object):
             'error': row['error'],
             'created_at': row['created_at'].isoformat(),
         } for row in rows]
-        returnValue(self.format_response(request, results=results))
+        returnValue({'results': results})
 
-    @handler(
+    @Service.handler(
         '/<string:voucher_pool>/import/<string:request_id>', methods=['PUT'])
     @inlineCallbacks
     def import_vouchers(self, request, voucher_pool, request_id):
-        self._set_request_id(request, request_id)
+        Service.set_request_id(request, request_id)
         content_md5 = request.requestHeaders.getRawHeaders('Content-MD5')
         if content_md5 is None:
             raise BadRequestParams("Missing Content-MD5 header.")
@@ -199,9 +216,9 @@ class AirtimeServiceApp(object):
             yield conn.close()
 
         request.setResponseCode(201)
-        returnValue(self.format_response(request, imported=True))
+        returnValue({'imported': True})
 
-    @handler('/<string:voucher_pool>/voucher_counts', methods=['GET'])
+    @Service.handler('/<string:voucher_pool>/voucher_counts', methods=['GET'])
     @inlineCallbacks
     def voucher_counts(self, request, voucher_pool):
         # This sets the request_id on the request object.
@@ -214,21 +231,19 @@ class AirtimeServiceApp(object):
         finally:
             yield conn.close()
 
-        if rows:
-            print rows[0].keys()
         results = [{
             'operator': row['operator'],
             'denomination': row['denomination'],
             'used': row['used'],
             'count': row['count'],
         } for row in rows]
-        returnValue(self.format_response(request, voucher_counts=results))
+        returnValue({'voucher_counts': results})
 
-    @handler(
+    @Service.handler(
         '/<string:voucher_pool>/export/<string:request_id>', methods=['PUT'])
     @inlineCallbacks
     def export_vouchers(self, request, voucher_pool, request_id):
-        self._set_request_id(request, request_id)
+        Service.set_request_id(request, request_id)
         params = self.get_json_params(
             request, [], ['count', 'operators', 'denominations'])
         conn = yield self.engine.connect()
@@ -240,9 +255,10 @@ class AirtimeServiceApp(object):
         finally:
             yield conn.close()
 
-        returnValue(self.format_response(
-            request, vouchers=response['vouchers'],
-            warnings=response['warnings']))
+        returnValue({
+            'vouchers': response['vouchers'],
+            'warnings': response['warnings'],
+        })
 
 
 def lowercase_row_keys(rows):
