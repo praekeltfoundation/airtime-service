@@ -8,7 +8,7 @@ airtime-service
 
 |airtime-service-cover|_
 
-.. |airtime-service-cover| image:: https://coveralls.io/repos/praekelt/airtime-service/badge.png
+.. |airtime-service-cover| image:: https://coveralls.io/repos/praekelt/airtime-service/badge.png?branch=develop
 .. _airtime-service-cover: https://coveralls.io/r/praekelt/airtime-service
 
 
