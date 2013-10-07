@@ -1,4 +1,4 @@
 Twisted
 klein
 sqlalchemy
-alchimia==0.3-dev
+alchimia>=0.4
