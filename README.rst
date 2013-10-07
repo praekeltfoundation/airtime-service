@@ -1,7 +1,7 @@
 airtime-service
 ===============
 
-|vumi-ci|_
+|airtime-service-ci|_
 
 .. |airtime-service-ci| image:: https://travis-ci.org/praekelt/airtime-service.png?branch=develop
 .. _airtime-service-ci: https://travis-ci.org/praekelt/airtime-service
