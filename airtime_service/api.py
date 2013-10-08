@@ -8,7 +8,7 @@ from twisted.internet.defer import inlineCallbacks, returnValue
 from airtime_service.models import (
     get_engine, VoucherPool, NoVoucherPool, NoVoucherAvailable, AuditMismatch,
 )
-from airtime_service.service import Service, APIError, BadRequestParams
+from airtime_service.aludel import Service, APIError, BadRequestParams
 
 
 @Service.service
