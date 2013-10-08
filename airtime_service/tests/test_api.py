@@ -89,7 +89,7 @@ class ApiClient(object):
         return self.get('testpool/voucher_counts', params, expected_code)
 
 
-class TestVoucherPool(TestCase):
+class TestAirtimeServiceApp(TestCase):
     timeout = 5
 
     @inlineCallbacks
@@ -242,6 +242,17 @@ class TestVoucherPool(TestCase):
         assert response == {
             'request_id': request_id,
             'results': expected_results,
+        }
+
+    @inlineCallbacks
+    def test_query_bad_field(self):
+        yield self.pool.create_tables()
+
+        rsp = yield self.client.get_audit_query(
+            'audit-0', 'foo', 'req-0', expected_code=400)
+        assert rsp == {
+            'request_id': 'audit-0',
+            'error': 'Invalid audit field.',
         }
 
     @inlineCallbacks
