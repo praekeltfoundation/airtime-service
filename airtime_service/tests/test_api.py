@@ -1,5 +1,6 @@
 from datetime import datetime
 from hashlib import md5
+from itertools import izip_longest
 import json
 from urllib import urlencode
 from StringIO import StringIO
@@ -226,8 +227,6 @@ class TestAirtimeServiceApp(TestCase):
             for result in response['results']:
                 yield datetime.strptime(
                     result['created_at'], '%Y-%m-%dT%H:%M:%S.%f').isoformat()
-            while True:
-                yield None
 
         expected_results = [{
             'request_id': entry['audit_params']['request_id'],
@@ -237,7 +236,8 @@ class TestAirtimeServiceApp(TestCase):
             'response_data': entry['response_data'],
             'error': entry['error'],
             'created_at': created_at,
-        } for entry, created_at in zip(expected_entries, created_ats())]
+        } for entry, created_at in izip_longest(
+            expected_entries, created_ats())]
 
         assert response == {
             'request_id': request_id,

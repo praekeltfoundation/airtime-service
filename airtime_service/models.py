@@ -333,10 +333,6 @@ class VoucherPool(object):
         return self._query_audit(self.audit.c.user_id == user_id)
 
     @inlineCallbacks
-    def _get_previously_exported_vouchers(self, request_id):
-        pass
-
-    @inlineCallbacks
     def _list_operators(self):
         rows = yield self._execute_fetchall(
             select([self.vouchers.c.operator]).distinct())
