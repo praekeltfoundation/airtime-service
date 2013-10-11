@@ -4,14 +4,13 @@ import json
 from alchimia import TWISTED_STRATEGY
 
 from sqlalchemy import (
-    create_engine, MetaData, Table, Column,
-    Integer, String, DateTime, Boolean,
+    create_engine, Column, Integer, String, DateTime, Boolean,
 )
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.schema import CreateTable
 from sqlalchemy.sql import select, func, and_, not_
 
 from twisted.internet.defer import inlineCallbacks, returnValue
+
+from .aludel import PrefixedTableCollection, TableMissingError
 
 
 class VoucherError(Exception):
@@ -34,131 +33,69 @@ def get_engine(conn_str, reactor):
     return create_engine(conn_str, reactor=reactor, strategy=TWISTED_STRATEGY)
 
 
-class VoucherPool(object):
-    def __init__(self, pool_name, connection=None):
-        self.name = pool_name
-        self._conn = connection
-        self.metadata = MetaData()
-        self.vouchers = Table(
-            self._table_name('vouchers'), self.metadata, *self.voucher_columns)
-        self.audit = Table(
-            self._table_name('audit'), self.metadata, *self.audit_columns)
-        self.import_audit = Table(
-            self._table_name('import_audit'), self.metadata,
-            *self.import_audit_columns)
-        self.export_audit = Table(
-            self._table_name('export_audit'), self.metadata,
-            *self.export_audit_columns)
-        self.exported_vouchers = Table(
-            self._table_name('exported_vouchers'), self.metadata,
-            *self.exported_vouchers_columns)
+class VoucherPool(PrefixedTableCollection):
+    vouchers = PrefixedTableCollection.make_table(
+        Column("id", Integer(), primary_key=True),
+        Column("operator", String(), nullable=False),
+        Column("denomination", String(), nullable=False),
+        Column("voucher", String(), nullable=False),
+        Column("used", Boolean(), default=False),
+        Column("created_at", DateTime(timezone=True)),
+        Column("modified_at", DateTime(timezone=True)),
+        Column("reason", String(), default=None),
+    )
 
-    @property
-    def voucher_columns(self):
-        return (
-            Column("id", Integer(), primary_key=True),
-            Column("operator", String(), nullable=False),
-            Column("denomination", String(), nullable=False),
-            Column("voucher", String(), nullable=False),
-            Column("used", Boolean(), default=False),
-            Column("created_at", DateTime(timezone=True)),
-            Column("modified_at", DateTime(timezone=True)),
-            Column("reason", String(), default=None),
-        )
+    audit = PrefixedTableCollection.make_table(
+        Column("id", Integer(), primary_key=True),
+        Column("request_id", String(), nullable=False, index=True,
+               unique=True),
+        Column("transaction_id", String(), nullable=False, index=True),
+        Column("user_id", String(), nullable=False, index=True),
+        Column("request_data", String(), nullable=False),
+        Column("response_data", String(), nullable=False),
+        Column("error", Boolean(), nullable=False),
+        Column("created_at", DateTime(timezone=True)),
+    )
 
-    @property
-    def audit_columns(self):
-        return (
-            Column("id", Integer(), primary_key=True),
-            Column("request_id", String(), nullable=False, index=True,
-                   unique=True),
-            Column("transaction_id", String(), nullable=False, index=True),
-            Column("user_id", String(), nullable=False, index=True),
-            Column("request_data", String(), nullable=False),
-            Column("response_data", String(), nullable=False),
-            Column("error", Boolean(), nullable=False),
-            Column("created_at", DateTime(timezone=True)),
-        )
+    import_audit = PrefixedTableCollection.make_table(
+        Column("id", Integer(), primary_key=True),
+        Column("request_id", String(), nullable=False, index=True,
+               unique=True),
+        Column("content_md5", String(), nullable=False),
+        Column("created_at", DateTime(timezone=True)),
+    )
 
-    @property
-    def import_audit_columns(self):
-        return (
-            Column("id", Integer(), primary_key=True),
-            Column("request_id", String(), nullable=False, index=True,
-                   unique=True),
-            Column("content_md5", String(), nullable=False),
-            Column("created_at", DateTime(timezone=True)),
-        )
+    export_audit = PrefixedTableCollection.make_table(
+        Column("id", Integer(), primary_key=True),
+        Column("request_id", String(), nullable=False, index=True,
+               unique=True),
+        Column("request_data", String(), nullable=False),
+        Column("warnings", String(), nullable=False),
+        Column("created_at", DateTime(timezone=True)),
+    )
 
-    @property
-    def export_audit_columns(self):
-        return (
-            Column("id", Integer(), primary_key=True),
-            Column("request_id", String(), nullable=False, index=True,
-                   unique=True),
-            Column("request_data", String(), nullable=False),
-            Column("warnings", String(), nullable=False),
-            Column("created_at", DateTime(timezone=True)),
-        )
-
-    @property
-    def exported_vouchers_columns(self):
-        return (
-            Column("id", Integer(), primary_key=True),
-            Column("request_id", String(), nullable=False, index=True,
-                   unique=True),
-            Column("voucher_id", Integer(), nullable=False),
-            Column("created_at", DateTime(timezone=True)),
-        )
-
-    def _table_name(self, basename):
-        return '%s_%s' % (self.name, basename)
+    exported_vouchers = PrefixedTableCollection.make_table(
+        Column("id", Integer(), primary_key=True),
+        Column("request_id", String(), nullable=False, index=True,
+               unique=True),
+        Column("voucher_id", Integer(), nullable=False),
+        Column("created_at", DateTime(timezone=True)),
+    )
 
     @inlineCallbacks
-    def _execute(self, query, *args, **kw):
+    def execute_query(self, query, *args, **kw):
         try:
-            result = yield self._conn.execute(query, *args, **kw)
-            returnValue(result)
-        except OperationalError as e:
-            if 'no such table: ' in str(e):
-                raise NoVoucherPool(self.name)
-            raise
-
-    @inlineCallbacks
-    def _execute_fetchall(self, query, *args, **kw):
-        result = yield self._execute(query, *args, **kw)
-        rows = yield result.fetchall()
-        returnValue(rows)
-
-    @inlineCallbacks
-    def _create_table(self, table):
-        # This works around alchimia's current inability to create tables only
-        # if they don't already exist.
-        try:
-            yield self._conn.execute(CreateTable(table))
-        except OperationalError as e:
-            if 'table %s already exists' % (table.name,) not in str(e):
-                raise
-
-    def exists(self):
-        # It would be nice to make this not use private things.
-        return self._conn._engine.has_table(self._table_name('vouchers'))
-
-    @inlineCallbacks
-    def create_tables(self):
-        trx = yield self._conn.begin()
-        yield self._create_table(self.vouchers)
-        yield self._create_table(self.audit)
-        yield self._create_table(self.import_audit)
-        yield self._create_table(self.export_audit)
-        yield self._create_table(self.exported_vouchers)
-        yield trx.commit()
+            result = yield super(VoucherPool, self).execute_query(
+                query, *args, **kw)
+        except TableMissingError:
+            raise NoVoucherPool(self.name)
+        returnValue(result)
 
     def _audit_request(self, audit_params, req_data, resp_data, error=False):
         request_id = audit_params['request_id']
         transaction_id = audit_params['transaction_id']
         user_id = audit_params['user_id']
-        return self._execute(
+        return self.execute_query(
             self.audit.insert().values(**{
                 'request_id': request_id,
                 'transaction_id': transaction_id,
@@ -171,7 +108,7 @@ class VoucherPool(object):
 
     @inlineCallbacks
     def _get_previous_request(self, audit_params, req_data):
-        rows = yield self._execute_fetchall(
+        rows = yield self.execute_fetchall(
             self.audit.select().where(
                 self.audit.c.request_id == audit_params['request_id']))
         if not rows:
@@ -202,7 +139,7 @@ class VoucherPool(object):
         trx = yield self._conn.begin()
 
         # Check if we've already done this one.
-        rows = yield self._execute_fetchall(
+        rows = yield self.execute_fetchall(
             self.import_audit.select().where(
                 self.import_audit.c.request_id == request_id))
         if rows:
@@ -213,7 +150,7 @@ class VoucherPool(object):
             else:
                 raise AuditMismatch(row['content_md5'])
 
-        yield self._execute(
+        yield self.execute_query(
             self.import_audit.insert().values(**{
                 'request_id': request_id,
                 'content_md5': content_md5,
@@ -230,7 +167,7 @@ class VoucherPool(object):
             'created_at': now,
             'modified_at': now,
         } for voucher_dict in voucher_dicts]
-        result = yield self._execute(self.vouchers.insert(), voucher_rows)
+        result = yield self.execute_query(self.vouchers.insert(), voucher_rows)
         yield trx.commit()
         returnValue(result)
 
@@ -242,7 +179,7 @@ class VoucherPool(object):
 
     @inlineCallbacks
     def _get_voucher(self, operator, denomination):
-        result = yield self._execute(
+        result = yield self.execute_query(
             self.vouchers.select().where(and_(
                 self.vouchers.c.operator == operator,
                 self.vouchers.c.denomination == denomination,
@@ -255,7 +192,7 @@ class VoucherPool(object):
 
     def _update_voucher(self, voucher_id, **values):
         values['modified_at'] = datetime.utcnow()
-        return self._execute(
+        return self.execute_query(
             self.vouchers.update().where(
                 self.vouchers.c.id == voucher_id).values(**values))
 
@@ -264,6 +201,8 @@ class VoucherPool(object):
         voucher = yield self._get_voucher(operator, denomination)
         if voucher is None:
             returnValue(None)
+        print voucher
+        print type(voucher)
         yield self._update_voucher(voucher['id'], used=True, reason=reason)
         returnValue(voucher)
 
@@ -295,7 +234,7 @@ class VoucherPool(object):
         returnValue(voucher)
 
     def count_vouchers(self):
-        return self._execute_fetchall(
+        return self.execute_fetchall(
             select([
                 self.vouchers.c.operator,
                 self.vouchers.c.denomination,
@@ -310,7 +249,7 @@ class VoucherPool(object):
 
     @inlineCallbacks
     def _query_audit(self, where_clause):
-        rows = yield self._execute_fetchall(
+        rows = yield self.execute_fetchall(
             self.audit.select().where(where_clause).order_by(
                 self.audit.c.created_at))
         returnValue([{
@@ -334,20 +273,20 @@ class VoucherPool(object):
 
     @inlineCallbacks
     def _list_operators(self):
-        rows = yield self._execute_fetchall(
+        rows = yield self.execute_fetchall(
             select([self.vouchers.c.operator]).distinct())
         returnValue([r['operator'] for r in rows])
 
     @inlineCallbacks
     def _list_denominations(self):
-        rows = yield self._execute_fetchall(
+        rows = yield self.execute_fetchall(
             select([self.vouchers.c.denomination]).distinct())
         returnValue([r['denomination'] for r in rows])
 
     @inlineCallbacks
     def _get_previous_export(self, trx, request_id, request_data):
         # Check if we've already done this one.
-        rows = yield self._execute_fetchall(
+        rows = yield self.execute_fetchall(
             self.export_audit.select().where(
                 self.export_audit.c.request_id == request_id))
         if not rows:
@@ -358,7 +297,7 @@ class VoucherPool(object):
             yield trx.rollback()
             raise AuditMismatch(row['request_data'])
 
-        vouchers = yield self._execute_fetchall(
+        vouchers = yield self.execute_fetchall(
             self.vouchers.select().select_from(
                 self.vouchers.join(
                     self.exported_vouchers,
@@ -381,7 +320,7 @@ class VoucherPool(object):
                 operator, denomination, 'exported')
             if voucher is None:
                 break
-            yield self._execute(
+            yield self.execute_query(
                 self.exported_vouchers.insert().values(**{
                     'request_id': request_id,
                     'voucher_id': voucher['id'],
@@ -428,7 +367,7 @@ class VoucherPool(object):
                 self._format_voucher(voucher, fields) for voucher in vouchers)
             response['warnings'].extend(warnings)
 
-        yield self._execute(
+        yield self.execute_query(
             self.export_audit.insert().values(**{
                 'request_id': request_id,
                 'request_data': json.dumps(request_data),

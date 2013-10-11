@@ -3,6 +3,10 @@ import json
 
 from klein import Klein
 
+from sqlalchemy import MetaData, Table, Column
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.schema import CreateTable
+
 from twisted.internet.defer import maybeDeferred
 from twisted.python import log
 
@@ -21,8 +25,27 @@ class BadRequestParams(APIError):
 
 
 class Service(object):
+    """Namespace class for RESTful service decorators.
+
+    This is used by applying the :meth:`service` decorator to a class and then
+    applying the :meth:`handler` decorator to handler methods on that class.
+
+    TODO: Document this better.
+    """
+
     @staticmethod
     def handler(*args, **kw):
+        """Decorator for HTTP request handlers.
+
+        This decorator takes the same parameters as Klein's ``route()``
+        decorator.
+
+        When used on a method of a class decorated with :meth:`service`, the
+        method is turned into a Klein request handler and response formatting
+        is added.
+
+        TODO: Document this better.
+        """
         def deco(func):
             func._handler_args = (args, kw)
             return func
@@ -30,6 +53,14 @@ class Service(object):
 
     @classmethod
     def service(cls, service_class):
+        """Decorator for RESTful API classes.
+
+        This decorator adds a bunch of magic to a class with
+        :meth:`handler`-decorated methods on it so it can be used as a Klein
+        HTTP resource.
+
+        TODO: Document this better.
+        """
         service_class.app = Klein()
         for attr in dir(service_class):
             meth = getattr(service_class, attr)
@@ -100,3 +131,76 @@ class Service(object):
             'request_id': cls.get_request_id(request),
             'error': error.message,
         })
+
+
+class TableMissingError(Exception):
+    pass
+
+
+class PrefixedTableCollection(object):
+    class make_table(object):
+        def __init__(self, *args, **kw):
+            self.args = args
+            self.kw = kw
+
+        def make_table(self, name, metadata):
+            return Table(name, metadata, *self.copy_args(), **self.kw)
+
+        def copy_args(self):
+            for arg in self.args:
+                if isinstance(arg, Column):
+                    yield arg.copy()
+                else:
+                    yield arg
+
+    def get_table_name(self, name):
+        return '%s_%s' % (self.name, name)
+
+    def __init__(self, name, connection):
+        self.name = name
+        self._conn = connection
+        self._metadata = MetaData()
+        for attr in dir(self):
+            attrval = getattr(self, attr)
+            if isinstance(attrval, PrefixedTableCollection.make_table):
+                setattr(self, attr, attrval.make_table(
+                    self.get_table_name(attr), self._metadata))
+
+    def _create_table(self, trx, table):
+        # This works around alchimia's current inability to create tables only
+        # if they don't already exist.
+
+        def table_exists_errback(f):
+            f.trap(OperationalError)
+            if 'table %s already exists' % (table.name,) in str(f.value):
+                return None
+            return f
+
+        d = self._conn.execute(CreateTable(table))
+        d.addErrback(table_exists_errback)
+        return d.addCallback(lambda r: trx)
+
+    def create_tables(self):
+        d = self._conn.begin()
+        for table in self._metadata.sorted_tables:
+            d.addCallback(self._create_table, table)
+        return d.addCallback(lambda trx: trx.commit())
+
+    def exists(self):
+        # It would be nice to make this not use private things.
+        return self._conn._engine.has_table(
+            self._metadata.sorted_tables[0].name)
+
+    def execute_query(self, query, *args, **kw):
+        def table_missing_errback(f):
+            f.trap(OperationalError)
+            if 'no such table: ' in str(f.value):
+                raise TableMissingError(f.value.message)
+            return f
+
+        d = self._conn.execute(query, *args, **kw)
+        return d.addErrback(table_missing_errback)
+
+    def execute_fetchall(self, query, *args, **kw):
+        d = self.execute_query(query, *args, **kw)
+        return d.addCallback(lambda result: result.fetchall())
