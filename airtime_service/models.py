@@ -1,16 +1,15 @@
 from datetime import datetime
 import json
 
-from alchimia import TWISTED_STRATEGY
 
-from sqlalchemy import (
-    create_engine, Column, Integer, String, DateTime, Boolean,
-)
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.sql import select, func, and_, not_
 
 from twisted.internet.defer import inlineCallbacks, returnValue
 
-from .aludel import PrefixedTableCollection, TableMissingError
+from aludel.database import (
+    PrefixedTableCollection, make_table, TableMissingError,
+)
 
 
 class VoucherError(Exception):
@@ -29,12 +28,8 @@ class NoVoucherAvailable(VoucherError):
     pass
 
 
-def get_engine(conn_str, reactor):
-    return create_engine(conn_str, reactor=reactor, strategy=TWISTED_STRATEGY)
-
-
 class VoucherPool(PrefixedTableCollection):
-    vouchers = PrefixedTableCollection.make_table(
+    vouchers = make_table(
         Column("id", Integer(), primary_key=True),
         Column("operator", String(), nullable=False),
         Column("denomination", String(), nullable=False),
@@ -45,7 +40,7 @@ class VoucherPool(PrefixedTableCollection):
         Column("reason", String(), default=None),
     )
 
-    audit = PrefixedTableCollection.make_table(
+    audit = make_table(
         Column("id", Integer(), primary_key=True),
         Column("request_id", String(), nullable=False, index=True,
                unique=True),
@@ -57,7 +52,7 @@ class VoucherPool(PrefixedTableCollection):
         Column("created_at", DateTime(timezone=True)),
     )
 
-    import_audit = PrefixedTableCollection.make_table(
+    import_audit = make_table(
         Column("id", Integer(), primary_key=True),
         Column("request_id", String(), nullable=False, index=True,
                unique=True),
@@ -65,7 +60,7 @@ class VoucherPool(PrefixedTableCollection):
         Column("created_at", DateTime(timezone=True)),
     )
 
-    export_audit = PrefixedTableCollection.make_table(
+    export_audit = make_table(
         Column("id", Integer(), primary_key=True),
         Column("request_id", String(), nullable=False, index=True,
                unique=True),
@@ -74,7 +69,7 @@ class VoucherPool(PrefixedTableCollection):
         Column("created_at", DateTime(timezone=True)),
     )
 
-    exported_vouchers = PrefixedTableCollection.make_table(
+    exported_vouchers = make_table(
         Column("id", Integer(), primary_key=True),
         Column("request_id", String(), nullable=False, index=True,
                unique=True),

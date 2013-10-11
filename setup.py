@@ -10,5 +10,7 @@ setup(
     author='Praekelt Foundation',
     author_email='dev@praekeltfoundation.org',
     packages=["airtime_service"],
-    install_requires=["Twisted", "klein", "sqlalchemy", "alchimia>=0.4"],
+    install_requires=[
+        "Twisted", "klein", "sqlalchemy", "alchimia>=0.4", "aludel",
+    ],
 )
