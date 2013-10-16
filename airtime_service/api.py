@@ -1,19 +1,21 @@
 from StringIO import StringIO
 import csv
 from hashlib import md5
-import json
 
 from aludel.database import get_engine
-from aludel.service import Service, APIError, BadRequestParams
+from aludel.service import (
+    service, handler, get_url_params, get_json_params, set_request_id,
+    APIError, BadRequestParams,
+)
 
 from twisted.internet.defer import inlineCallbacks, returnValue
 
-from airtime_service.models import (
+from .models import (
     VoucherPool, NoVoucherPool, NoVoucherAvailable, AuditMismatch,
 )
 
 
-@Service.service
+@service
 class AirtimeServiceApp(object):
     def __init__(self, conn_str, reactor):
         self.engine = get_engine(conn_str, reactor)
@@ -28,23 +30,13 @@ class AirtimeServiceApp(object):
                 " parameters.")
         return failure
 
-    def get_json_params(self, request, mandatory, optional=()):
-        return Service.get_params(
-            json.loads(request.content.read()), mandatory, optional)
-
-    def get_url_params(self, request, mandatory, optional=()):
-        if 'request_id' in request.args:
-            Service.set_request_id(request, request.args['request_id'][0])
-        params = Service.get_params(request.args, mandatory, optional)
-        return dict((k, v[0]) for k, v in params.iteritems())
-
-    @Service.handler(
+    @handler(
         '/<string:voucher_pool>/issue/<string:operator>/<string:request_id>',
         methods=['PUT'])
     @inlineCallbacks
     def issue_voucher(self, request, voucher_pool, operator, request_id):
-        Service.set_request_id(request, request_id)
-        params = self.get_json_params(
+        set_request_id(request, request_id)
+        params = get_json_params(
             request, ['transaction_id', 'user_id', 'denomination'])
         audit_params = {
             'request_id': request_id,
@@ -64,10 +56,10 @@ class AirtimeServiceApp(object):
 
         returnValue({'voucher': voucher['voucher']})
 
-    @Service.handler('/<string:voucher_pool>/audit_query', methods=['GET'])
+    @handler('/<string:voucher_pool>/audit_query', methods=['GET'])
     @inlineCallbacks
     def audit_query(self, request, voucher_pool):
-        params = self.get_url_params(
+        params = get_url_params(
             request, ['field', 'value'], ['request_id'])
         if params['field'] not in ['request_id', 'transaction_id', 'user_id']:
             raise BadRequestParams('Invalid audit field.')
@@ -95,11 +87,11 @@ class AirtimeServiceApp(object):
         } for row in rows]
         returnValue({'results': results})
 
-    @Service.handler(
+    @handler(
         '/<string:voucher_pool>/import/<string:request_id>', methods=['PUT'])
     @inlineCallbacks
     def import_vouchers(self, request, voucher_pool, request_id):
-        Service.set_request_id(request, request_id)
+        set_request_id(request, request_id)
         content_md5 = request.requestHeaders.getRawHeaders('Content-MD5')
         if content_md5 is None:
             raise BadRequestParams("Missing Content-MD5 header.")
@@ -122,11 +114,11 @@ class AirtimeServiceApp(object):
         request.setResponseCode(201)
         returnValue({'imported': True})
 
-    @Service.handler('/<string:voucher_pool>/voucher_counts', methods=['GET'])
+    @handler('/<string:voucher_pool>/voucher_counts', methods=['GET'])
     @inlineCallbacks
     def voucher_counts(self, request, voucher_pool):
         # This sets the request_id on the request object.
-        self.get_url_params(request, [], ['request_id'])
+        get_url_params(request, [], ['request_id'])
 
         conn = yield self.engine.connect()
         pool = VoucherPool(voucher_pool, conn)
@@ -143,12 +135,12 @@ class AirtimeServiceApp(object):
         } for row in rows]
         returnValue({'voucher_counts': results})
 
-    @Service.handler(
+    @handler(
         '/<string:voucher_pool>/export/<string:request_id>', methods=['PUT'])
     @inlineCallbacks
     def export_vouchers(self, request, voucher_pool, request_id):
-        Service.set_request_id(request, request_id)
-        params = self.get_json_params(
+        set_request_id(request, request_id)
+        params = get_json_params(
             request, [], ['count', 'operators', 'denominations'])
         conn = yield self.engine.connect()
         pool = VoucherPool(voucher_pool, conn)
