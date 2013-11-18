@@ -196,8 +196,6 @@ class VoucherPool(PrefixedTableCollection):
         voucher = yield self._get_voucher(operator, denomination)
         if voucher is None:
             returnValue(None)
-        print voucher
-        print type(voucher)
         yield self._update_voucher(voucher['id'], used=True, reason=reason)
         returnValue(voucher)
 
