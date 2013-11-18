@@ -44,8 +44,8 @@ class AirtimeServiceApp(object):
             'user_id': params.pop('user_id'),
         }
         conn = yield self.engine.connect()
-        pool = VoucherPool(voucher_pool, conn)
         try:
+            pool = VoucherPool(voucher_pool, conn)
             voucher = yield pool.issue_voucher(
                 operator, params['denomination'], audit_params)
         except NoVoucherAvailable:
@@ -65,8 +65,8 @@ class AirtimeServiceApp(object):
             raise BadRequestParams('Invalid audit field.')
 
         conn = yield self.engine.connect()
-        pool = VoucherPool(voucher_pool, conn)
         try:
+            pool = VoucherPool(voucher_pool, conn)
             query = {
                 'request_id': pool.query_by_request_id,
                 'transaction_id': pool.query_by_transaction_id,
@@ -105,8 +105,8 @@ class AirtimeServiceApp(object):
         row_iter = lowercase_row_keys(reader)
 
         conn = yield self.engine.connect()
-        pool = VoucherPool(voucher_pool, conn)
         try:
+            pool = VoucherPool(voucher_pool, conn)
             yield pool.import_vouchers(request_id, content_md5, row_iter)
         finally:
             yield conn.close()
@@ -121,8 +121,8 @@ class AirtimeServiceApp(object):
         get_url_params(request, [], ['request_id'])
 
         conn = yield self.engine.connect()
-        pool = VoucherPool(voucher_pool, conn)
         try:
+            pool = VoucherPool(voucher_pool, conn)
             rows = yield pool.count_vouchers()
         finally:
             yield conn.close()
@@ -143,8 +143,8 @@ class AirtimeServiceApp(object):
         params = get_json_params(
             request, [], ['count', 'operators', 'denominations'])
         conn = yield self.engine.connect()
-        pool = VoucherPool(voucher_pool, conn)
         try:
+            pool = VoucherPool(voucher_pool, conn)
             response = yield pool.export_vouchers(
                 request_id, params.get('count'), params.get('operators'),
                 params.get('denominations'))
