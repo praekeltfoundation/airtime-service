@@ -48,8 +48,7 @@ class AirtimeServiceApp(object):
             voucher = yield pool.issue_voucher(
                 operator, params['denomination'], audit_params)
         except NoVoucherAvailable:
-            # This is a normal condition, so we still return a 200 OK.
-            raise APIError('No voucher available.', 200)
+            raise APIError('No voucher available.', 500)
         finally:
             yield conn.close()
 

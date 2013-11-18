@@ -216,7 +216,8 @@ class TestAirtimeServiceApp(TestCase):
     @inlineCallbacks
     def test_issue_no_voucher(self):
         yield populate_pool(self.pool, ['Tank'], ['red'], [0])
-        rsp = yield self.client.put_issue('req-0', 'Tank', 'blue')
+        rsp = yield self.client.put_issue(
+            'req-0', 'Tank', 'blue', expected_code=500)
         assert rsp == {
             'request_id': 'req-0',
             'error': 'No voucher available.',
