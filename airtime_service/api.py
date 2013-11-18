@@ -21,7 +21,6 @@ class AirtimeServiceApp(object):
         self.engine = get_engine(conn_str, reactor)
 
     def handle_api_error(self, failure, request):
-        # failure.printTraceback()
         if failure.check(NoVoucherPool):
             raise APIError('Voucher pool does not exist.', 404)
         if failure.check(AuditMismatch):
