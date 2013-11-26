@@ -128,9 +128,6 @@ class VoucherPool(PrefixedTableCollection):
 
     @inlineCallbacks
     def import_vouchers(self, request_id, content_md5, voucher_dicts):
-        # We may not have a table if this is the first import.
-        yield self.create_tables()
-
         trx = yield self._conn.begin()
 
         # Check if we've already done this one.
