@@ -27,12 +27,13 @@ class TestVoucherPool(TestCase):
         rows = self.successResultOf(pool.count_vouchers())
         assert sorted(tuple(r) for r in rows) == sorted(expected_rows)
 
-    def test_import_creates_table(self):
+    def test_import_fails_for_missing_pool(self):
         pool = VoucherPool('testpool', self.conn)
         f = self.failureResultOf(pool.count_vouchers(), NoVoucherPool)
         assert f.value.args == ('testpool',)
-        populate_pool(pool, ['Tank'], ['red'], [0])
-        self.assert_voucher_counts(pool, [('Tank', 'red', False, 1)])
+        f = self.failureResultOf(
+            populate_pool(pool, ['Tank'], ['red'], [0]), NoVoucherPool)
+        assert f.value.args == ('testpool',)
 
     def test_exists(self):
         pool = VoucherPool('testpool', self.conn)
@@ -98,6 +99,7 @@ class TestVoucherPool(TestCase):
 
     def test_issue_voucher(self):
         pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
         populate_pool(pool, ['Tank'], ['red'], [0])
         self.assert_voucher_counts(pool, [('Tank', 'red', False, 1)])
 
@@ -118,6 +120,7 @@ class TestVoucherPool(TestCase):
 
     def test_issue_voucher_idempotent(self):
         pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
         populate_pool(pool, ['Tank'], ['red'], [0])
         self.assert_voucher_counts(pool, [('Tank', 'red', False, 1)])
 
@@ -280,6 +283,7 @@ class TestVoucherPool(TestCase):
 
     def test_export_all_vouchers(self):
         pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
         populate_pool(pool, ['Tank', 'Link'], ['red', 'blue'], [0, 1])
         self.assert_voucher_counts(pool, [
             ('Link', 'blue', False, 2),
@@ -311,6 +315,7 @@ class TestVoucherPool(TestCase):
 
     def test_export_some_vouchers(self):
         pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
         # We give all vouchers of the same type the same voucher code to avoid
         # having to check all the permutations.
         populate_pool(pool, ['Tank', 'Link'], ['red', 'blue'], [0, 0, 0])
@@ -360,6 +365,7 @@ class TestVoucherPool(TestCase):
 
     def test_export_too_many_vouchers(self):
         pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
         # We give all vouchers of the same type the same voucher code to avoid
         # having to check all the permutations.
         populate_pool(pool, ['Tank', 'Link'], ['red', 'blue'], [0, 0, 0])
@@ -418,6 +424,7 @@ class TestVoucherPool(TestCase):
 
     def test_export_idempotent(self):
         pool = VoucherPool('testpool', self.conn)
+        self.successResultOf(pool.create_tables())
         # We give all vouchers of the same type the same voucher code to avoid
         # having to check all the permutations.
         populate_pool(pool, ['Tank', 'Link'], ['red', 'blue'], [0, 0, 0])
