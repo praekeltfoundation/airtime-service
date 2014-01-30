@@ -11,7 +11,6 @@ DEFAULT_PORT = '8080'
 
 class Options(usage.Options):
     """Command line args when run as a twistd plugin"""
-    # TODO other args
     optParameters = [["port", "p", DEFAULT_PORT,
                       "Port number for airtime-service to listen on"],
                      ["database-connection-string", "d", None,
