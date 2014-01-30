@@ -31,10 +31,10 @@ class NoVoucherAvailable(VoucherError):
 class VoucherPool(PrefixedTableCollection):
     vouchers = make_table(
         Column("id", Integer(), primary_key=True),
-        Column("operator", String(), nullable=False),
-        Column("denomination", String(), nullable=False),
-        Column("voucher", String(), nullable=False),
-        Column("used", Boolean(), default=False),
+        Column("operator", String(), nullable=False, index=True),
+        Column("denomination", String(), nullable=False, index=True),
+        Column("voucher", String(), nullable=False, index=True),
+        Column("used", Boolean(), default=False, index=True),
         Column("created_at", DateTime(timezone=True)),
         Column("modified_at", DateTime(timezone=True)),
         Column("reason", String(), default=None),
@@ -91,15 +91,15 @@ class VoucherPool(PrefixedTableCollection):
         transaction_id = audit_params['transaction_id']
         user_id = audit_params['user_id']
         return self.execute_query(
-            self.audit.insert().values(**{
-                'request_id': request_id,
-                'transaction_id': transaction_id,
-                'user_id': user_id,
-                'request_data': json.dumps(req_data),
-                'response_data': json.dumps(resp_data),
-                'error': error,
-                'created_at': datetime.utcnow(),
-            }))
+            self.audit.insert().values(
+                request_id=request_id,
+                transaction_id=transaction_id,
+                user_id=user_id,
+                request_data=json.dumps(req_data),
+                response_data=json.dumps(resp_data),
+                error=error,
+                created_at=datetime.utcnow(),
+            ))
 
     @inlineCallbacks
     def _get_previous_request(self, audit_params, req_data):
@@ -143,11 +143,11 @@ class VoucherPool(PrefixedTableCollection):
                 raise AuditMismatch(row['content_md5'])
 
         yield self.execute_query(
-            self.import_audit.insert().values(**{
-                'request_id': request_id,
-                'content_md5': content_md5,
-                'created_at': datetime.utcnow(),
-            }))
+            self.import_audit.insert().values(
+                request_id=request_id,
+                content_md5=content_md5,
+                created_at=datetime.utcnow(),
+            ))
 
         # NOTE: We're assuming that this will be fast enough. If it isn't,
         # we'll need to make a database-specific plan of some kind.
@@ -311,10 +311,10 @@ class VoucherPool(PrefixedTableCollection):
             if voucher is None:
                 break
             yield self.execute_query(
-                self.exported_vouchers.insert().values(**{
-                    'request_id': request_id,
-                    'voucher_id': voucher['id'],
-                }))
+                self.exported_vouchers.insert().values(
+                    request_id=request_id,
+                    voucher_id=voucher['id'],
+                ))
             vouchers.append(voucher)
 
         if (count is not None) and (count > len(vouchers)):
@@ -358,12 +358,12 @@ class VoucherPool(PrefixedTableCollection):
             response['warnings'].extend(warnings)
 
         yield self.execute_query(
-            self.export_audit.insert().values(**{
-                'request_id': request_id,
-                'request_data': json.dumps(request_data),
-                'warnings': json.dumps(response['warnings']),
-                'created_at': datetime.utcnow(),
-            }))
+            self.export_audit.insert().values(
+                request_id=request_id,
+                request_data=json.dumps(request_data),
+                warnings=json.dumps(response['warnings']),
+                created_at=datetime.utcnow(),
+            ))
 
         yield trx.commit()
         returnValue(response)
