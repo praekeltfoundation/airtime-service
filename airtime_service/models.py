@@ -1,15 +1,11 @@
 from datetime import datetime
 import json
 
-
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.sql import select, func, and_, not_
-
 from twisted.internet.defer import inlineCallbacks, returnValue
 
-from aludel.database import (
-    PrefixedTableCollection, make_table, TableMissingError,
-)
+from aludel.database import TableCollection, make_table, TableMissingError
 
 
 class VoucherError(Exception):
@@ -28,7 +24,7 @@ class NoVoucherAvailable(VoucherError):
     pass
 
 
-class VoucherPool(PrefixedTableCollection):
+class VoucherPool(TableCollection):
     vouchers = make_table(
         Column("id", Integer(), primary_key=True),
         Column("operator", String(), nullable=False, index=True),
