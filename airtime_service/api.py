@@ -85,6 +85,21 @@ class AirtimeServiceApp(object):
         } for row in rows]
         returnValue({'results': results})
 
+    @handler('/<string:voucher_pool>', methods=['PUT'])
+    @inlineCallbacks
+    def create_pool(self, request, voucher_pool):
+        conn = yield self.engine.connect()
+        pool = VoucherPool(voucher_pool, conn)
+        try:
+            already_exists = yield pool.exists()
+            if not already_exists:
+                request.setResponseCode(201)
+            yield pool.create_tables()
+        finally:
+            yield conn.close()
+
+        returnValue({'created': not already_exists})
+
     @handler(
         '/<string:voucher_pool>/import/<string:request_id>', methods=['PUT'])
     @inlineCallbacks

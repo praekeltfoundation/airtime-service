@@ -57,6 +57,10 @@ class ApiClient(object):
         url_path = 'testpool/issue/%s/%s' % (operator, request_id)
         return self.put_json(url_path, params, expected_code)
 
+    def put_create(self, expected_code=201):
+        url_path = 'testpool'
+        return self.put(url_path, Headers({}), None, expected_code)
+
     def put_import(self, request_id, content, content_md5=None,
                    expected_code=201):
         url_path = 'testpool/import/%s' % (request_id,)
@@ -162,12 +166,14 @@ class TestAirtimeServiceApp(TestCase):
 
     @inlineCallbacks
     def test_issue_response_contains_request_id(self):
+        yield self.pool.create_tables()
         yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
         rsp0 = yield self.client.put_issue('req-0', 'Tank', 'red')
         assert rsp0['request_id'] == 'req-0'
 
     @inlineCallbacks
     def test_issue(self):
+        yield self.pool.create_tables()
         yield populate_pool(self.pool, ['Tank'], ['red'], [0, 1])
         rsp0 = yield self.client.put_issue('req-0', 'Tank', 'red')
         assert set(rsp0.keys()) == set(['request_id', 'voucher'])
@@ -183,6 +189,7 @@ class TestAirtimeServiceApp(TestCase):
 
     @inlineCallbacks
     def test_issue_idempotent(self):
+        yield self.pool.create_tables()
         yield populate_pool(self.pool, ['Tank'], ['red'], [0])
         rsp0 = yield self.client.put_issue('req-0', 'Tank', 'red')
         assert rsp0 == {
@@ -215,6 +222,7 @@ class TestAirtimeServiceApp(TestCase):
 
     @inlineCallbacks
     def test_issue_no_voucher(self):
+        yield self.pool.create_tables()
         yield populate_pool(self.pool, ['Tank'], ['red'], [0])
         rsp = yield self.client.put_issue(
             'req-0', 'Tank', 'blue', expected_code=500)
@@ -345,6 +353,20 @@ class TestAirtimeServiceApp(TestCase):
         }])
 
     @inlineCallbacks
+    def test_create(self):
+        resp = yield self.client.put_create()
+        assert resp == {
+            'request_id': None,
+            'created': True,
+        }
+        # Recreating a pool has a different response.
+        resp = yield self.client.put_create(expected_code=200)
+        assert resp == {
+            'request_id': None,
+            'created': False,
+        }
+
+    @inlineCallbacks
     def test_import(self):
         yield self.pool.create_tables()
         yield self.assert_voucher_counts([])
@@ -372,6 +394,26 @@ class TestAirtimeServiceApp(TestCase):
             ('Tank', 'blue', False, 2),
             ('Tank', 'red', False, 2),
         ])
+
+    @inlineCallbacks
+    def test_import_missing_pool(self):
+        content = '\n'.join([
+            'operator,denomination,voucher',
+            'Tank,red,Tr0',
+            'Tank,red,Tr1',
+            'Tank,blue,Tb0',
+            'Tank,blue,Tb1',
+            'Link,red,Lr0',
+            'Link,red,Lr1',
+            'Link,blue,Lb0',
+            'Link,blue,Lb1',
+        ])
+
+        rsp = yield self.client.put_import('req-0', content, expected_code=404)
+        assert rsp == {
+            'request_id': 'req-0',
+            'error': 'Voucher pool does not exist.',
+        }
 
     @inlineCallbacks
     def test_import_heading_case_mismatch(self):
@@ -533,6 +575,7 @@ class TestAirtimeServiceApp(TestCase):
 
     @inlineCallbacks
     def test_export_all_vouchers(self):
+        yield self.pool.create_tables()
         yield populate_pool(
             self.pool, ['Tank', 'Link'], ['red', 'blue'], [0, 1])
 
@@ -561,6 +604,7 @@ class TestAirtimeServiceApp(TestCase):
 
     @inlineCallbacks
     def test_export_some_vouchers(self):
+        yield self.pool.create_tables()
         # We give all vouchers of the same type the same voucher code to avoid
         # having to check all the permutations.
         yield populate_pool(
@@ -594,6 +638,7 @@ class TestAirtimeServiceApp(TestCase):
 
     @inlineCallbacks
     def test_export_too_many_vouchers(self):
+        yield self.pool.create_tables()
         # We give all vouchers of the same type the same voucher code to avoid
         # having to check all the permutations.
         yield populate_pool(
@@ -629,6 +674,7 @@ class TestAirtimeServiceApp(TestCase):
 
     @inlineCallbacks
     def test_export_idempotent(self):
+        yield self.pool.create_tables()
         yield populate_pool(self.pool, ['Tank', 'Link'], ['red', 'blue'], [0])
         yield self.assert_voucher_counts([
             ('Link', 'blue', False, 1),
