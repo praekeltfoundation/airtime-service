@@ -31,10 +31,10 @@ class NoVoucherAvailable(VoucherError):
 class VoucherPool(PrefixedTableCollection):
     vouchers = make_table(
         Column("id", Integer(), primary_key=True),
-        Column("operator", String(), nullable=False),
-        Column("denomination", String(), nullable=False),
-        Column("voucher", String(), nullable=False),
-        Column("used", Boolean(), default=False),
+        Column("operator", String(), nullable=False, index=True),
+        Column("denomination", String(), nullable=False, index=True),
+        Column("voucher", String(), nullable=False, index=True),
+        Column("used", Boolean(), default=False, index=True),
         Column("created_at", DateTime(timezone=True)),
         Column("modified_at", DateTime(timezone=True)),
         Column("reason", String(), default=None),
