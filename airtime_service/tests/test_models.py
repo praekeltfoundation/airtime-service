@@ -2,7 +2,6 @@ from datetime import datetime
 
 from aludel.database import get_engine
 from aludel.tests.doubles import FakeReactorThreads
-
 from twisted.trial.unittest import TestCase
 
 from airtime_service.models import (
