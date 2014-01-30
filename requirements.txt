@@ -2,4 +2,4 @@ Twisted
 klein
 sqlalchemy
 alchimia>=0.4
-aludel
+aludel==0.2
