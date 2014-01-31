@@ -8,7 +8,17 @@ install:
   - "pip install -r requirements.txt"
   - "pip install -r test-requirements.txt"
   - "pip install coveralls"
+  # Extra database libraries
+  - "pip install psycopg2 mysql-python"
+before_script:
+  - mysql -e 'create database aludel_test;'
+  - psql -c 'create database aludel_test;' -U postgres
 script:
+  # Default, in-memory sqlite
   - py.test --cov=airtime_service airtime_service
+  # PostgreSQL
+  - ALUDEL_TEST_CONNECTION_STRING='postgresql://postgres@localhost:5432/aludel_test' py.test airtime_service
+  # MySQL
+  - ALUDEL_TEST_CONNECTION_STRING='mysql+mysqldb://travis@localhost/aludel_test' py.test airtime_service
 after_success:
   - coveralls

@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+import os
 
-from aludel.database import get_engine
+from aludel.database import get_engine, MetaData
 from aludel.tests.doubles import FakeReactorThreads
 from twisted.trial.unittest import TestCase
 
@@ -11,16 +12,39 @@ from airtime_service.models import (
 from .helpers import populate_pool, mk_audit_params, sorted_dicts, voucher_dict
 
 
+def round_dt(dt):
+    """
+    Return a copy of ``dt`` rounded to the nearest second.
+
+    MySQL apparently does this for its DATETIME fields.
+    """
+    new_dt = dt.replace(microsecond=0)
+    if dt.microsecond >= 500000:
+        new_dt += timedelta(seconds=1)
+    return new_dt
+
+
 class TestVoucherPool(TestCase):
     timeout = 5
 
     def setUp(self):
-        self.engine = get_engine("sqlite://", reactor=FakeReactorThreads())
+        connection_string = os.environ.get(
+            "ALUDEL_TEST_CONNECTION_STRING", "sqlite://")
+        self.engine = get_engine(
+            connection_string, reactor=FakeReactorThreads())
+        self._drop_tables()
         self.conn = self.successResultOf(self.engine.connect())
-        self._request_count = 0
 
     def tearDown(self):
         self.successResultOf(self.conn.close())
+        self._drop_tables()
+        assert self.successResultOf(self.engine.table_names()) == []
+
+    def _drop_tables(self):
+        # NOTE: This is a blocking operation!
+        md = MetaData(bind=self.engine._engine)
+        md.reflect()
+        md.drop_all()
 
     def assert_voucher_counts(self, pool, expected_rows):
         rows = self.successResultOf(pool.count_vouchers())
@@ -185,7 +209,7 @@ class TestVoucherPool(TestCase):
         rows = self.successResultOf(pool.query_by_request_id('req-0'))
 
         created_at = rows[0]['created_at']
-        assert before <= created_at <= after
+        assert round_dt(before) <= round_dt(created_at) <= round_dt(after)
         assert rows == [{
             'request_id': audit_params['request_id'],
             'transaction_id': audit_params['transaction_id'],
@@ -206,20 +230,20 @@ class TestVoucherPool(TestCase):
             pool.query_by_transaction_id('transaction-0'))
         assert rows == []
 
-        before = datetime.utcnow()
+        before = round_dt(datetime.utcnow())
         self.successResultOf(
             pool._audit_request(audit_params_0, 'req_data_0', 'resp_data_0'))
         self.successResultOf(
             pool._audit_request(audit_params_1, 'req_data_1', 'resp_data_1'))
         self.successResultOf(
             pool._audit_request(mk_audit_params('req-excl'), 'excl', 'excl'))
-        after = datetime.utcnow()
+        after = round_dt(datetime.utcnow())
 
         rows = self.successResultOf(
             pool.query_by_transaction_id('transaction-0'))
-        created_at_0 = rows[0]['created_at']
-        created_at_1 = rows[1]['created_at']
-        assert before <= created_at_0 <= created_at_1 <= after
+        created_0 = rows[0]['created_at']
+        created_1 = rows[1]['created_at']
+        assert before <= round_dt(created_0) <= round_dt(created_1) <= after
 
         assert rows == [{
             'request_id': audit_params_0['request_id'],
@@ -228,7 +252,7 @@ class TestVoucherPool(TestCase):
             'request_data': u'req_data_0',
             'response_data': u'resp_data_0',
             'error': False,
-            'created_at': created_at_0,
+            'created_at': created_0,
         }, {
             'request_id': audit_params_1['request_id'],
             'transaction_id': audit_params_1['transaction_id'],
@@ -236,7 +260,7 @@ class TestVoucherPool(TestCase):
             'request_data': u'req_data_1',
             'response_data': u'resp_data_1',
             'error': False,
-            'created_at': created_at_1,
+            'created_at': created_1,
         }]
 
     def test_query_by_user_id(self):
@@ -248,19 +272,19 @@ class TestVoucherPool(TestCase):
         rows = self.successResultOf(pool.query_by_user_id('user-0'))
         assert rows == []
 
-        before = datetime.utcnow()
+        before = round_dt(datetime.utcnow())
         self.successResultOf(
             pool._audit_request(audit_params_0, 'req_data_0', 'resp_data_0'))
         self.successResultOf(
             pool._audit_request(audit_params_1, 'req_data_1', 'resp_data_1'))
         self.successResultOf(
             pool._audit_request(mk_audit_params('req-excl'), 'excl', 'excl'))
-        after = datetime.utcnow()
+        after = round_dt(datetime.utcnow())
 
         rows = self.successResultOf(pool.query_by_user_id('user-0'))
-        created_at_0 = rows[0]['created_at']
-        created_at_1 = rows[1]['created_at']
-        assert before <= created_at_0 <= created_at_1 <= after
+        created_0 = rows[0]['created_at']
+        created_1 = rows[1]['created_at']
+        assert before <= round_dt(created_0) <= round_dt(created_1) <= after
 
         assert rows == [{
             'request_id': audit_params_0['request_id'],
@@ -269,7 +293,7 @@ class TestVoucherPool(TestCase):
             'request_data': u'req_data_0',
             'response_data': u'resp_data_0',
             'error': False,
-            'created_at': created_at_0,
+            'created_at': created_0,
         }, {
             'request_id': audit_params_1['request_id'],
             'transaction_id': audit_params_1['transaction_id'],
@@ -277,7 +301,7 @@ class TestVoucherPool(TestCase):
             'request_data': u'req_data_1',
             'response_data': u'resp_data_1',
             'error': False,
-            'created_at': created_at_1,
+            'created_at': created_1,
         }]
 
     def test_export_all_vouchers(self):
