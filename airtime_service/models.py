@@ -5,7 +5,7 @@ from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from sqlalchemy.sql import select, func, and_, not_
 from twisted.internet.defer import inlineCallbacks, returnValue
 
-from aludel.database import TableCollection, make_table, TableMissingError
+from aludel.database import TableCollection, make_table, CollectionMissingError
 
 
 class VoucherError(Exception):
@@ -78,7 +78,7 @@ class VoucherPool(TableCollection):
         try:
             result = yield super(VoucherPool, self).execute_query(
                 query, *args, **kw)
-        except TableMissingError:
+        except CollectionMissingError:
             raise NoVoucherPool(self.name)
         returnValue(result)
 
