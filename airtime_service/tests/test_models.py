@@ -29,6 +29,12 @@ class TestVoucherPool(TestCase):
         self._drop_tables()
         assert self.successResultOf(self.engine.table_names()) == []
 
+    def _drop_tables(self):
+        # NOTE: This is a blocking operation!
+        md = MetaData(bind=self.engine._engine)
+        md.reflect()
+        md.drop_all()
+
     def before(self):
         """
         Hack to deal with MySQL mangling datetimes.
@@ -46,12 +52,6 @@ class TestVoucherPool(TestCase):
         if self._using_mysql:
             after = after.replace(microsecond=0) + timedelta(seconds=1)
         return after
-
-    def _drop_tables(self):
-        # NOTE: This is a blocking operation!
-        md = MetaData(bind=self.engine._engine)
-        md.reflect()
-        md.drop_all()
 
     def assert_voucher_counts(self, pool, expected_rows):
         rows = self.successResultOf(pool.count_vouchers())
