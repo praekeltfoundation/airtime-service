@@ -43,7 +43,7 @@ class VoucherPool(TableCollection):
         Column("transaction_id", String(255), nullable=False, index=True),
         Column("user_id", String(255), nullable=False, index=True),
         Column("request_data", Text(), nullable=False),
-        Column("response_data", Text, nullable=False),
+        Column("response_data", Text(), nullable=False),
         Column("error", Boolean(), nullable=False),
         Column("created_at", DateTime(timezone=False)),
     )
