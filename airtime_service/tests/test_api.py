@@ -249,9 +249,12 @@ class TestAirtimeServiceApp(TestCase):
 
     def _assert_audit_entries(self, request_id, response, expected_entries):
         def created_ats():
+            format_str = '%Y-%m-%dT%H:%M:%S.%f'
+            if self._using_mysql:
+                format_str = format_str.replace('.%f', '')
             for result in response['results']:
                 yield datetime.strptime(
-                    result['created_at'], '%Y-%m-%dT%H:%M:%S.%f').isoformat()
+                    result['created_at'], format_str).isoformat()
 
         expected_results = [{
             'request_id': entry['audit_params']['request_id'],
