@@ -2,9 +2,11 @@ from datetime import datetime
 from hashlib import md5
 from itertools import izip_longest
 import json
+import os
 from urllib import urlencode
 from StringIO import StringIO
 
+from aludel.database import MetaData
 from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks
 from twisted.trial.unittest import TestCase
@@ -102,16 +104,30 @@ class TestAirtimeServiceApp(TestCase):
         # We need to make sure all our queries run in the same thread,
         # otherwise sqlite gets very sad.
         reactor.suggestThreadPoolSize(1)
-        self.asapp = AirtimeServiceApp("sqlite://", reactor=reactor)
+        connection_string = os.environ.get(
+            "ALUDEL_TEST_CONNECTION_STRING", "sqlite://")
+        self._using_mysql = connection_string.startswith('mysql')
+        self.asapp = AirtimeServiceApp(connection_string, reactor=reactor)
         site = Site(self.asapp.app.resource())
         self.listener = reactor.listenTCP(0, site, interface='localhost')
         self.listener_port = self.listener.getHost().port
+        self._drop_tables()
         self.conn = yield self.asapp.engine.connect()
         self.pool = VoucherPool('testpool', self.conn)
         self.client = ApiClient('http://localhost:%s' % (self.listener_port,))
 
+    @inlineCallbacks
     def tearDown(self):
-        return self.listener.loseConnection()
+        yield self.conn.close()
+        self._drop_tables()
+        yield self.listener.loseConnection()
+
+    def _drop_tables(self):
+        # NOTE: This is a blocking operation!
+        md = MetaData(bind=self.asapp.engine._engine)
+        md.reflect()
+        md.drop_all()
+        assert self.asapp.engine._engine.table_names() == []
 
     @inlineCallbacks
     def assert_voucher_counts(self, expected_rows):

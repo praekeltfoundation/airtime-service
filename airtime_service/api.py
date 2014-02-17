@@ -94,7 +94,7 @@ class AirtimeServiceApp(object):
             already_exists = yield pool.exists()
             if not already_exists:
                 request.setResponseCode(201)
-            yield pool.create_tables()
+                yield pool.create_tables()
         finally:
             yield conn.close()
 
