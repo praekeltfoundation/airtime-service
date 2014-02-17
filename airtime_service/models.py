@@ -1,15 +1,11 @@
 from datetime import datetime
 import json
 
-
-from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text
 from sqlalchemy.sql import select, func, and_, not_
-
 from twisted.internet.defer import inlineCallbacks, returnValue
 
-from aludel.database import (
-    PrefixedTableCollection, make_table, TableMissingError,
-)
+from aludel.database import TableCollection, make_table, CollectionMissingError
 
 
 class VoucherError(Exception):
@@ -28,53 +24,53 @@ class NoVoucherAvailable(VoucherError):
     pass
 
 
-class VoucherPool(PrefixedTableCollection):
+class VoucherPool(TableCollection):
     vouchers = make_table(
         Column("id", Integer(), primary_key=True),
-        Column("operator", String(), nullable=False, index=True),
-        Column("denomination", String(), nullable=False, index=True),
-        Column("voucher", String(), nullable=False, index=True),
+        Column("operator", String(255), nullable=False, index=True),
+        Column("denomination", String(255), nullable=False, index=True),
+        Column("voucher", String(255), nullable=False, index=True),
         Column("used", Boolean(), default=False, index=True),
-        Column("created_at", DateTime(timezone=True)),
-        Column("modified_at", DateTime(timezone=True)),
-        Column("reason", String(), default=None),
+        Column("created_at", DateTime(timezone=False)),
+        Column("modified_at", DateTime(timezone=False)),
+        Column("reason", String(255), default=None),
     )
 
     audit = make_table(
         Column("id", Integer(), primary_key=True),
-        Column("request_id", String(), nullable=False, index=True,
+        Column("request_id", String(255), nullable=False, index=True,
                unique=True),
-        Column("transaction_id", String(), nullable=False, index=True),
-        Column("user_id", String(), nullable=False, index=True),
-        Column("request_data", String(), nullable=False),
-        Column("response_data", String(), nullable=False),
+        Column("transaction_id", String(255), nullable=False, index=True),
+        Column("user_id", String(255), nullable=False, index=True),
+        Column("request_data", Text(), nullable=False),
+        Column("response_data", Text(), nullable=False),
         Column("error", Boolean(), nullable=False),
-        Column("created_at", DateTime(timezone=True)),
+        Column("created_at", DateTime(timezone=False)),
     )
 
     import_audit = make_table(
         Column("id", Integer(), primary_key=True),
-        Column("request_id", String(), nullable=False, index=True,
+        Column("request_id", String(255), nullable=False, index=True,
                unique=True),
-        Column("content_md5", String(), nullable=False),
-        Column("created_at", DateTime(timezone=True)),
+        Column("content_md5", String(255), nullable=False),
+        Column("created_at", DateTime(timezone=False)),
     )
 
     export_audit = make_table(
         Column("id", Integer(), primary_key=True),
-        Column("request_id", String(), nullable=False, index=True,
+        Column("request_id", String(255), nullable=False, index=True,
                unique=True),
-        Column("request_data", String(), nullable=False),
-        Column("warnings", String(), nullable=False),
-        Column("created_at", DateTime(timezone=True)),
+        Column("request_data", Text(), nullable=False),
+        Column("warnings", Text(), nullable=False),
+        Column("created_at", DateTime(timezone=False)),
     )
 
     exported_vouchers = make_table(
         Column("id", Integer(), primary_key=True),
-        Column("request_id", String(), nullable=False, index=True,
+        Column("request_id", String(255), nullable=False, index=True,
                unique=True),
         Column("voucher_id", Integer(), nullable=False),
-        Column("created_at", DateTime(timezone=True)),
+        Column("created_at", DateTime(timezone=False)),
     )
 
     @inlineCallbacks
@@ -82,7 +78,7 @@ class VoucherPool(PrefixedTableCollection):
         try:
             result = yield super(VoucherPool, self).execute_query(
                 query, *args, **kw)
-        except TableMissingError:
+        except CollectionMissingError:
             raise NoVoucherPool(self.name)
         returnValue(result)
 
