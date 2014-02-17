@@ -1,5 +1,2 @@
-Twisted
-klein
-sqlalchemy
-alchimia>=0.4
-aludel==0.3
+# Our dependencies are all specified in setup.py.
+-e .
