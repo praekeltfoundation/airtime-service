@@ -219,8 +219,10 @@ class VoucherPool(TableCollection):
             yield trx.commit()
         returnValue(voucher)
 
+    @inlineCallbacks
     def count_vouchers(self):
-        return self.execute_fetchall(
+        trx = yield self._conn.begin()
+        rows = yield self.execute_fetchall(
             select([
                 self.vouchers.c.operator,
                 self.vouchers.c.denomination,
@@ -232,6 +234,8 @@ class VoucherPool(TableCollection):
                 self.vouchers.c.used,
             )
         )
+        yield trx.commit()
+        returnValue(rows)
 
     @inlineCallbacks
     def _query_audit(self, where_clause):
